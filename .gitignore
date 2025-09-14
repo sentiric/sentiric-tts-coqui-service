@@ -144,6 +144,14 @@ ENV/
 env.bak/
 venv.bak/
 
+# Ortam dosyaları
+.env
+!.env.example          # örnek config dosyasını tut
+
+# Çalışma zamanı veya geçici dosyalar
+.env.generated
+.profile.state
+
 # Spyder project settings
 .spyderproject
 .spyproject

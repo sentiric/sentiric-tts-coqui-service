@@ -1,0 +1,35 @@
+# docker-compose.prod.yml
+# Service Geliştirme ortamı
+
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric-net}"
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET}
+          gateway: ${NETWORK_GATEWAY}
+  
+# volumes:
+  # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
+  # --------------------------------------------------  
+
+services:
+  # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
+  # -------------------------------------------------- 
+  tts-coqui-service:
+    image: ghcr.io/sentiric/sentiric-tts-coqui-service:${TAG:-latest}    
+    env_file: ["${ENV_FILE_PATH}"]
+    volumes: 
+      - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+    ports: 
+      - "15010:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
+      - "15011:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
+      - "15012:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"          
+    networks:
+      sentiric-net:
+        ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
+    restart: always
+   

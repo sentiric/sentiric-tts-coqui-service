@@ -32,9 +32,13 @@ Thumbs.db
 # Log dosyaları
 *.log
 
-# Ortam değişken dosyaları
+# Ortam dosyaları
 .env
 .env.*
+
+# Docker compose 
+docker-compose.yml
+docker-compose.*.yml
 
 # Test çıktıları ve coverage
 htmlcov/
@@ -49,6 +53,3 @@ coverage.xml
 # Jupyter Notebook checkpoint dosyaları
 .ipynb_checkpoints/
 
-# Docker-compose vs.
-docker-compose.yml
-docker-compose.override.yml
