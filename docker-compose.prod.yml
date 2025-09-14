@@ -25,9 +25,9 @@ services:
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
       - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
     ports: 
-      - "15010:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
-      - "15011:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
-      - "15012:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"          
+      - "14030:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
+      - "14031:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
+      - "14032:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"          
     networks:
       sentiric-net:
         ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
