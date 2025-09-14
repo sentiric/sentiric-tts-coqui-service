@@ -94,8 +94,8 @@ start: _profile_check _sync_config _generate_env _validate_service ## ▶️ Pla
 		$(COMPOSE_CMD) pull $(SERVICE); \
 		$(COMPOSE_CMD) up -d --remove-orphans $(SERVICE); \
 	fi
-	$(MAKE) _setup_bucket # Servisler başladıktan SONRA _setup_bucket'ı çağır
-	@echo -e "$(GREEN)✅ Platform başlatıldı. Durum kontrolü için: make status$(RESET)"
+# 	$(MAKE) _setup_bucket # Servisler başladıktan SONRA _setup_bucket'ı çağır
+# 	@echo -e "$(GREEN)✅ Platform başlatıldı. Durum kontrolü için: make status$(RESET)"
 
 stop: _profile_check _generate_env _validate_service ## ⏹️ Platformu durdurur (verileri korur)
 	@echo -e "$(YELLOW)🛑 Platform durduruluyor (veriler korunacak)... Profil: $(PROFILE)$(RESET)"

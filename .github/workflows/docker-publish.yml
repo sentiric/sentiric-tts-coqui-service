@@ -55,8 +55,11 @@ jobs:
         run: |
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
           echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          # pyproject.toml'dan versiyonu çekmek daha dinamik olur ama şimdilik statik kalabilir.
-          echo "SERVICE_VERSION=1.0.0" >> $GITHUB_ENV
+          
+          # pyproject.toml'dan versiyonu dinamik olarak al
+          SERVICE_VERSION=$(grep '^version' pyproject.toml | cut -d '"' -f2)
+          echo "SERVICE_VERSION=$SERVICE_VERSION" >> $GITHUB_ENV
+          
           echo "REPO_NAME_LOWER=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
 
@@ -80,6 +83,5 @@ jobs:
             GIT_COMMIT=${{ env.GIT_COMMIT }}
             BUILD_DATE=${{ env.BUILD_DATE }}
             PYTORCH_EXTRA_INDEX_URL=${{ matrix.pytorch_url }}
-          # no-cache: true # Geliştirme tamamlandıktan sonra cache'i etkinleştirmek build'leri hızlandırır.
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=${{ github.ref }}-${{ matrix.target }}
+          cache-to: type=gha,scope=${{ github.ref }}-${{ matrix.target }},mode=max

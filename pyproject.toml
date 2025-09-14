@@ -1,16 +1,17 @@
 [build-system]
-requires = ["setuptools>=61.0"]
+requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "sentiric-tts-coqui-service"
-version = "0.1.0"
-description = "Expert TTS engine using Coqui XTTS for the Sentiric Platform."
+version = "0.1.1"
+description = "Sentiric TTS Coqui Service"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "fastapi",
     "uvicorn[standard]",
+    "gunicorn", # <--- GUNICORN'U EKLE
     "pydantic",
     "pydantic-settings",
     "python-dotenv",
@@ -22,7 +23,8 @@ dependencies = [
     "torch==2.3.0",
     "torchaudio==2.3.0",
     "transformers==4.39.3",
-    "numba==0.58.1", # DÜZELTME: Numba versiyonunu sabitliyoruz
+    "librosa==0.10.1",
+    "numba==0.58.1",
     "TTS @ git+https://github.com/azmisahin-forks/coqui-TTS.git@sentiric"
 ]
 

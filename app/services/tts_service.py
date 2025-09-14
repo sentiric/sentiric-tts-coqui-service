@@ -48,6 +48,7 @@ class CoquiTTSEngine:
         self.model: Optional[TTS] = None
         self.logger = logger.bind(service_component="CoquiTTSEngine")
         self.device = self._get_device()
+        # Modeli hemen yükleme, lazy loading yap
 
     def _get_device(self) -> str:
         device_setting = settings.TTS_MODEL_DEVICE.lower()
@@ -60,6 +61,9 @@ class CoquiTTSEngine:
         try:
             self.logger.info("Coqui XTTS Modeli yükleniyor...", device=self.device)
             os.environ["COQUI_TOS_AGREED"] = "1"
+            
+            # Modeli runtime'da indir
+            from TTS.api import TTS
             self.model = TTS(settings.TTS_MODEL_NAME).to(self.device)
             self.logger.info("Coqui XTTS Modeli başarıyla yüklendi.")
         except Exception as e:

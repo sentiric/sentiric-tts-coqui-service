@@ -31,7 +31,7 @@ Bu servis, özellikle sıfırdan ses klonlama (zero-shot voice cloning) yeteneğ
 ## 🚀 Yerel Geliştirme
 
 1.  **Bağımlılıkları Yükleyin:** `pip install -e ".[dev]"`
-2.  **Servisi Başlatın:** `uvicorn app.main:app --reload --port 5002` (veya `.env` dosyanızdaki port)
+2.  **Servisi Başlatın:** `uvicorn app.main:app --reload --port 14030` (veya `.env` dosyanızdaki port)
 
 ## 🤝 Katkıda Bulunma
 

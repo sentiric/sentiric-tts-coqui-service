@@ -1,3 +1,4 @@
+# app/api/v1/endpoints.py
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, HttpUrl
 from typing import Optional
