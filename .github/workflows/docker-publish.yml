@@ -1,7 +1,12 @@
 # =================================================================
-#    SENTIRIC PLATFORM - STANDART CI/CD DOCKER YAYINLAMA (v3.3 - Observable Build)
+#    SENTIRIC PLATFORM - STANDART CI/CD DOCKER YAYINLAMA v4.0 (Matrix Build)
 # =================================================================
-name: Docker Image CI
+# YENİLİKLER:
+# - Tek bir 'job' içinde hem CPU hem de GPU imajlarını paralel olarak oluşturur.
+# - 'matrix' stratejisi kullanarak kod tekrarını önler ve bakımı kolaylaştırır.
+# - Etiketleme şeması: `:latest-cpu`, `:latest-gpu`, `:1.0.0-cpu-a1b2c3d` vb.
+# =================================================================
+name: Docker Image CI (CPU & GPU)
 
 on:
   push:
@@ -9,18 +14,30 @@ on:
   workflow_dispatch:
 
 jobs:
-  build_and_push:
+  build_and_push_matrix: # İşin adını daha açıklayıcı hale getirdik
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
+
+    # --- MATRIX STRATEJİSİ ---
+    # Bu bölüm, işi aşağıda tanımlanan her bir konfigürasyon için bir kez çalıştırır.
+    strategy:
+      matrix:
+        include:
+          - target: cpu
+            tag_suffix: cpu
+            pytorch_url: "https://download.pytorch.org/whl/cpu"
+          - target: gpu
+            tag_suffix: gpu
+            pytorch_url: "https://download.pytorch.org/whl/cu121" # Örnek: CUDA 12.1 için
 
     steps:
       - name: Check out the repo with submodules
         uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          fetch-depth: 0 # Git geçmişini tam çekerek commit hash'ini alabilmek için
+          fetch-depth: 0
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -32,32 +49,37 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       
-      - name: Extract service name from repository name
-        id: get_service_name
-        run: |
-          REPO_NAME="${{ github.repository }}"
-          echo "SERVICE_NAME=${REPO_NAME#*/}" >> $GITHUB_ENV
-
-      # YENİ: Build argümanlarını hazırla
-      - name: Prepare Build Arguments
+      # --- Dinamik Bilgileri Hazırlama ---
+      - name: Prepare Dynamic Build Arguments
         id: prep
         run: |
           echo "BUILD_DATE=$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> $GITHUB_ENV
           echo "GIT_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-          # Go mod dosyasından versiyonu okumak daha karmaşık olduğu için şimdilik commit'e odaklanalım
-          # Veya buraya statik bir versiyon numarası da ekleyebilirsiniz.
+          # pyproject.toml'dan versiyonu çekmek daha dinamik olur ama şimdilik statik kalabilir.
           echo "SERVICE_VERSION=1.0.0" >> $GITHUB_ENV
+          echo "REPO_NAME_LOWER=$(echo ${{ github.repository }} | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
-      - name: Build and push Docker image
+
+      # --- Dinamik Etiketleri (Tags) Oluşturma ---
+      - name: Generate Docker Tags for ${{ matrix.target }}
+        id: meta
+        run: |
+          TAGS="ghcr.io/${{ env.REPO_NAME_LOWER }}:latest-${{ matrix.tag_suffix }},ghcr.io/${{ env.REPO_NAME_LOWER }}:${{ env.SERVICE_VERSION }}-${{ matrix.tag_suffix }}-${{ env.GIT_COMMIT }}"
+          echo "tags=$TAGS" >> $GITHUB_OUTPUT
+
+      # --- Build & Push Adımı ---
+      # Bu adım, matrix'teki her bir konfigürasyon (cpu, gpu) için çalışacak.
+      - name: Build and push ${{ matrix.target }} Docker image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ghcr.io/${{ github.repository }}:latest, ghcr.io/${{ github.repository }}:${{ env.SERVICE_VERSION }}-${{ env.GIT_COMMIT }}
-          # build-args ile Dockerfile'a yeni bilgileri gönder
+          tags: ${{ steps.meta.outputs.tags }}
           build-args: |
-            SERVICE_NAME=${{ env.SERVICE_NAME }}
-            BUILD_DATE=${{ env.BUILD_DATE }}
-            GIT_COMMIT=${{ env.GIT_COMMIT }}
             SERVICE_VERSION=${{ env.SERVICE_VERSION }}
-          no-cache: true
+            GIT_COMMIT=${{ env.GIT_COMMIT }}
+            BUILD_DATE=${{ env.BUILD_DATE }}
+            PYTORCH_EXTRA_INDEX_URL=${{ matrix.pytorch_url }}
+          # no-cache: true # Geliştirme tamamlandıktan sonra cache'i etkinleştirmek build'leri hızlandırır.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

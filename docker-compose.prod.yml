@@ -1,5 +1,5 @@
 # docker-compose.prod.yml
-# Service Geliştirme ortamı
+# Service Üretim (Production) ortamı
 
 networks:
   sentiric-net:
@@ -9,16 +9,37 @@ networks:
       config:
         - subnet: ${NETWORK_SUBNET}
           gateway: ${NETWORK_GATEWAY}
-  
+
 # volumes:
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
-  # --------------------------------------------------  
+  # --------------------------------------------------            
 
 services:
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
   # -------------------------------------------------- 
   tts-coqui-service:
-    image: ghcr.io/sentiric/sentiric-tts-coqui-service:${TAG:-latest}    
+    # --- İMAJ SEÇİMİ (EN ÖNEMLİ KISIM) ---
+    # Ortamınıza göre doğru imajı seçin. GitHub Actions CI/CD sürecinizde
+    # hem CPU (-cpu) hem de GPU (-gpu) için ayrı etiketli imajlar üretilmelidir.
+    # Örnek: ghcr.io/sentiric/sentiric-tts-coqui-service:latest-cpu
+    #        ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
+    #
+    # TAG ortam değişkeni ile bu dinamik olarak yönetilebilir.
+    # Örnek: TAG=latest-cpu make start PROFILE=prod
+    image: ghcr.io/sentiric/sentiric-tts-coqui-service:${TAG:-latest-cpu}
+
+    # --- GPU KAYNAK AYARLARI (Sadece GPU ortamında gereklidir) ---
+    # Eğer GPU imajını (`:latest-gpu` gibi) kullanıyorsanız ve sunucunuzda
+    # NVIDIA Container Toolkit kurulu ise, bu bölümü aktif hale getirin.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: 1 # veya 'all'
+    #           capabilities: [gpu]
+
+    # --- SERVİSİN GENEL AYARLARI ---
     env_file: ["${ENV_FILE_PATH}"]
     volumes: 
       - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
@@ -32,4 +53,3 @@ services:
       sentiric-net:
         ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
     restart: always
-   
