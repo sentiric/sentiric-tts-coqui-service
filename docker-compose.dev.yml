@@ -20,7 +20,7 @@ services:
     # --- BUILD AYARLARI ---
     build:
       context: ../sentiric-tts-coqui-service
-      args:
+      # args:
         # Dockerfile'daki varsayılan değerler CPU build için ayarlandı.
         # GPU build için aşağıdaki yorum satırlarını kaldırın ve
         # sisteminizdeki CUDA versiyonuna uygun değerleri girin (örn: cu118, cu121).
