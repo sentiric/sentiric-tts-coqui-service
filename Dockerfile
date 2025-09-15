@@ -72,10 +72,13 @@ RUN mkdir -p /tmp/numba_cache /tmp/matplotlib /tmp/transformers_cache /tmp/torch
 
 # --- Çalışma zamanı sistem bağımlılıkları ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    netcat-openbsd \
+    curl \
+    ca-certificates \
     libsndfile1 \
     ffmpeg \
-    curl \
     && rm -rf /var/lib/apt/lists/*
+
 
 # --- Builder'dan dosyaları kopyala ---
 # 7.45 GB
