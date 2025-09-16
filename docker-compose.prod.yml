@@ -25,21 +25,16 @@ services:
     #        ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
     #
     # TAG ortam değişkeni ile bu dinamik olarak yönetilebilir.
-    # Örnek: TAG=latest-cpu make start PROFILE=prod
-    image: ghcr.io/sentiric/sentiric-tts-coqui-service:${TAG:-latest-cpu}
+    # Örnek: TAG=latest-gpu make start PROFILE=prod
+    image: ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
 
-    # --- GPU KAYNAK AYARLARI (Sadece GPU ortamında gereklidir) ---
-    # Eğer GPU imajını (`:latest-gpu` gibi) kullanıyorsanız ve sunucunuzda
-    # NVIDIA Container Toolkit kurulu ise, bu bölümü aktif hale getirin.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: 1 # veya 'all'
-    #           capabilities: [gpu]
-
-    # --- SERVİSİN GENEL AYARLARI ---
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     env_file: ["${ENV_FILE_PATH}"]
     volumes: 
       - "${CONFIG_REPO_PATH}:/sentiric-config:ro"

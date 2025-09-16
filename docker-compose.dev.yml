@@ -17,20 +17,12 @@ services:
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
   # -------------------------------------------------- 
   tts-coqui-service:
-    # --- BUILD AYARLARI ---
     build:
       context: ../sentiric-tts-coqui-service
-      # args:
-        # Dockerfile'daki varsayılan değerler CPU build için ayarlandı.
-        # GPU build için aşağıdaki yorum satırlarını kaldırın ve
-        # sisteminizdeki CUDA versiyonuna uygun değerleri girin (örn: cu118, cu121).
-        # PYTHON_VERSION: 3.11
-        # BASE_IMAGE_TAG: "3.11-slim-bullseye" # Veya NVIDIA'nın kendi imajı "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04"
-        # PYTORCH_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cu121"
-
-    # --- GPU KAYNAK AYARLARI ---
-    # Not: Docker Desktop veya Linux üzerinde NVIDIA Container Toolkit kurulu olmalıdır.
-    # Eğer GPU'lu bir ortam yoksa bu bölüm Docker tarafından genellikle göz ardı edilir.
+      args:
+        PYTHON_VERSION: 3.11
+        BASE_IMAGE_TAG: "3.11-slim-bullseye" # Veya NVIDIA'nın kendi imajı "nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04"
+        PYTORCH_EXTRA_INDEX_URL: "https://download.pytorch.org/whl/cu121"
     deploy:
       resources:
         reservations:
@@ -38,8 +30,6 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-    # --- SERVİSİN GENEL AYARLARI ---
     env_file: ["${ENV_FILE_PATH}"]
     volumes: 
       - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
