@@ -1,7 +1,8 @@
 # ======================================================================================
-#    SENTIRIC COQUI TTS SERVICE - RUNTIME INSTALL DOCKERFILE v3.0
+#    SENTIRIC COQUI TTS SERVICE - RUNTIME INSTALL DOCKERFILE v3.1
 # ======================================================================================
 
+# --- GLOBAL BUILD ARGÜMANLARI ---
 ARG PYTHON_VERSION=3.11
 ARG BASE_IMAGE_TAG=${PYTHON_VERSION}-slim-bullseye
 ARG PYTORCH_EXTRA_INDEX_URL="https://download.pytorch.org/whl/cpu"
@@ -21,12 +22,10 @@ ENV GIT_COMMIT=${GIT_COMMIT} \
     SERVICE_VERSION=${SERVICE_VERSION} \
     COQUI_TOS_AGREED=1 \
     PYTHONUNBUFFERED=1 \
-    # ÖNEMLİ: Cache dizinlerini appuser'ın home dizinine yönlendir
     HF_HOME="/home/appuser/.cache/huggingface" \
     TORCH_HOME="/home/appuser/.cache/torch"
 
 # --- Çalışma zamanı ve kurulum için sistem bağımlılıkları ---
-# git, build-essential ve pip artık runtime'da gerekli
 RUN apt-get update && apt-get install -y --no-install-recommends \
     netcat-openbsd \
     curl \
@@ -44,12 +43,13 @@ COPY docs ./docs
 COPY scripts/entrypoint.sh /entrypoint.sh
 
 # --- Kurulum ve İzinler ---
-# Önce kullanıcıyı oluştur, sonra dosyaları kopyala ve izinleri ayarla
 RUN useradd -m -u 1001 appuser && \
     pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir poetry && \
     poetry config virtualenvs.create false && \
-    poetry install --no-dev --no-root --sync --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}" && \
+    # --- DÜZELTME BURADA ---
+    poetry install --without dev --no-root --sync --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}" && \
+    # --- DÜZELTME SONU ---
     chmod +x /entrypoint.sh && \
     chown -R appuser:appgroup /app /home/appuser
 
