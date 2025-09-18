@@ -1,5 +1,5 @@
 # ======================================================================================
-#    SENTIRIC COQUI TTS SERVICE - CI/CD & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.2
+#    SENTIRIC COQUI TTS SERVICE - CI/CD & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.3
 # ======================================================================================
 
 # --- GLOBAL BUILD ARGÜMANLARI ---
@@ -15,6 +15,9 @@ ARG SERVICE_VERSION="0.0.0"
 # ======================================================================================
 FROM python:${BASE_IMAGE_TAG} AS builder
 
+# Build argümanlarını bu aşamada da kullanılabilir yap
+ARG PYTORCH_EXTRA_INDEX_URL
+
 WORKDIR /app
 
 ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
@@ -25,16 +28,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml setup.py README.md ./
-COPY app ./app
+# pip'i güncelle
+RUN pip install --no-cache-dir --upgrade pip
 
-# Sadece bağımlılıkları kur, projeyi kurma
-RUN pip install --prefix=/install . --no-deps --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}"
+# --- DÜZELTME BURADA ---
+# Sadece var olan dosyaları kopyala
+COPY pyproject.toml .
+# --- DÜZELTME SONU ---
+
+# Poetry gibi bir araç kullanmadığımız için, setuptools projenin kendisini de kurmaya çalışabilir.
+# Sadece bağımlılıkları kurmak için `pip install -r requirements.txt` daha güvenilir bir yöntemdir.
+# Önce requirements.txt'yi kopyalayıp kuralım.
+COPY requirements.txt .
+RUN pip install --prefix=/install -r requirements.txt --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}"
+
 
 # ======================================================================================
 #    STAGE 2: PRODUCTION - Hafif ve temiz imaj
 # ======================================================================================
-FROM python:${BASE_IMAGE_TAG} AS production
+FROM python:${BASE_IMAGE_TAG}
 
 WORKDIR /app
 
@@ -64,7 +76,7 @@ COPY --from=builder /install /usr/local
 RUN useradd -m -u 1001 appuser
 COPY ./app ./app
 COPY ./docs /app/docs
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appgroup /app
 
 USER appuser
 

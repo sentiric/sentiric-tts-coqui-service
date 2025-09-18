@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+gunicorn
+pydantic
+pydantic-settings
+python-dotenv
+structlog
+prometheus-fastapi-instrumentator
+httpx
+soundfile
+numpy
+torch==2.3.0
+torchaudio==2.3.0
+transformers==4.39.3
+librosa==0.10.1
+numba==0.58.1
+TTS @ git+https://github.com/azmisahin-forks/coqui-TTS.git@sentiric
