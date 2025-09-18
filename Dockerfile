@@ -1,5 +1,5 @@
 # ======================================================================================
-#    SENTIRIC COQUI TTS SERVICE - POETRY & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.6
+#    SENTIRIC COQUI TTS SERVICE - POETRY & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.7
 # ======================================================================================
 
 # --- GLOBAL BUILD ARGÜMANLARI ---
@@ -35,12 +35,8 @@ RUN pip install --no-cache-dir poetry
 # Sadece bağımlılık tanımlarını kopyala
 COPY poetry.lock pyproject.toml ./
 
-# --- DÜZELTME BURADA ---
-# Bağımlılıkları kur (üretim için, dev bağımlılıkları hariç)
-# --no-dev yerine --without dev kullanılıyor.
+# Bağımlılıkları kur
 RUN poetry install --without dev --no-root --sync
-# --- DÜZELTME SONU ---
-
 
 # ======================================================================================
 #    STAGE 2: PRODUCTION - Hafif ve temiz imaj
@@ -69,14 +65,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-# --- Bağımlılıkları Kopyala ---
+# --- DÜZELTME BURADA BAŞLIYOR ---
+# Önce kullanıcı ve grubu oluştur
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --no-create-home --uid 1001 --ingroup appgroup appuser
+
+# Bağımlılıkları kopyala
 COPY --from=builder /app/.venv ./.venv
 
-# --- Güvenlik ve uygulama kurulumu ---
-RUN useradd -m -u 1001 appuser
+# Uygulama kodunu kopyala
 COPY ./app ./app
 COPY ./docs /app/docs
+
+# Tüm dosyaların sahipliğini tek seferde değiştir
 RUN chown -R appuser:appgroup /app
+# --- DÜZELTME SONU ---
 
 USER appuser
 
