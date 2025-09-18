@@ -6,6 +6,14 @@ authors = ["Azmi ŞAHİN <6445951+azmisahin@users.noreply.github.com>"]
 readme = "README.md"
 packages = [{include = "app"}]
 
+# --- YENİ BÖLÜM BAŞLANGICI ---
+# Poetry'ye PyTorch için özel bir paket kaynağı olduğunu söylüyoruz.
+[[tool.poetry.source]]
+name = "pytorch"
+url = "https://download.pytorch.org/whl/cpu"
+priority = "explicit"
+# --- YENİ BÖLÜM SONU ---
+
 [tool.poetry.dependencies]
 python = ">=3.11,<3.12"
 fastapi = "^0.111.0"
@@ -15,14 +23,14 @@ pydantic = "^2.7.4"
 pydantic-settings = "^2.3.4"
 python-dotenv = "^1.0.1"
 structlog = "^24.1.0"
-# --- DÜZELTME BURADA ---
 prometheus-fastapi-instrumentator = "^6.1.0"
-# --- DÜZELTME SONU ---
 httpx = "^0.27.0"
 soundfile = "^0.12.1"
 numpy = "^1.26.4"
-torch = "2.3.0"
-torchaudio = "2.3.0"
+# --- DEĞİŞİKLİK: Torch paketlerine hangi kaynaktan yükleneceğini belirtiyoruz ---
+torch = {version = "2.3.0", source = "pytorch"}
+torchaudio = {version = "2.3.0", source = "pytorch"}
+# --- DEĞİŞİKLİK SONU ---
 transformers = "4.39.3"
 librosa = "0.10.1"
 numba = "0.58.1"
