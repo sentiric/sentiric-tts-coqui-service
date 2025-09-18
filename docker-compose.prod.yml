@@ -10,10 +10,10 @@ networks:
         - subnet: ${NETWORK_SUBNET}
           gateway: ${NETWORK_GATEWAY}
 
-# volumes:
+volumes:
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
   # --------------------------------------------------            
-
+  tts-coqui-model-cache:
 services:
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
   # -------------------------------------------------- 
@@ -40,6 +40,8 @@ services:
       - "${CONFIG_REPO_PATH}:/sentiric-config:ro"
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
       - "${ASSETS_REPO_PATH}:/sentiric-assets:ro"
+      # YENİ: Model cache'ini volume'a bağla
+      - tts-coqui-model-cache:/home/appuser/.local/share/tts
     ports: 
       - "14030:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
       - "14031:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"

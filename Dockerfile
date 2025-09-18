@@ -1,5 +1,5 @@
 # ======================================================================================
-#    SENTIRIC COQUI TTS SERVICE - OPTIMIZE EDİLMİŞ VE ÖLÇEKLENEBİLİR DOCKERFILE v2.1
+#    SENTIRIC COQUI TTS SERVICE - CI/CD & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.2
 # ======================================================================================
 
 # --- GLOBAL BUILD ARGÜMANLARI ---
@@ -11,40 +11,28 @@ ARG BUILD_DATE="unknown"
 ARG SERVICE_VERSION="0.0.0"
 
 # ======================================================================================
-#    STAGE 1: BUILDER
+#    STAGE 1: BUILDER - Sadece Python bağımlılıklarını kurar
 # ======================================================================================
 FROM python:${BASE_IMAGE_TAG} AS builder
 
-ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
-    PIP_NO_CACHE_DIR=1 \
-    COQUI_TOS_AGREED=1 \
-    NUMBA_CACHE_DIR=/tmp/numba_cache \
-    MPLCONFIGDIR=/tmp/matplotlib \
-    TRANSFORMERS_CACHE=/tmp/transformers_cache \
-    HF_HOME=/tmp/transformers_cache \
-    TORCH_HOME=/tmp/torch_cache
-
 WORKDIR /app
 
-# --- Cache dizinlerini oluştur ---
-RUN mkdir -p /tmp/numba_cache /tmp/matplotlib /tmp/transformers_cache /tmp/torch_cache && \
-    chmod 777 /tmp/numba_cache /tmp/matplotlib /tmp/transformers_cache /tmp/torch_cache
+ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
+    PIP_NO_CACHE_DIR=1
 
-# --- Sistem Bağımlılıkları ---
+# --- Sistem Bağımlılıkları (Sadece build için gerekenler) ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
-    ffmpeg \
-    git \
     && rm -rf /var/lib/apt/lists/*
 
-COPY . .
+COPY pyproject.toml setup.py README.md ./
+COPY app ./app
 
-RUN pip install . --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}"
-# --- Modeli önceden indir --- + 1.8 GB
-RUN python -c "from TTS.api import TTS; TTS(model_name='tts_models/multilingual/multi-dataset/xtts_v2')"
+# Sadece bağımlılıkları kur, projeyi kurma
+RUN pip install --prefix=/install . --no-deps --extra-index-url "${PYTORCH_EXTRA_INDEX_URL}"
 
 # ======================================================================================
-#    STAGE 2: PRODUCTION
+#    STAGE 2: PRODUCTION - Hafif ve temiz imaj
 # ======================================================================================
 FROM python:${BASE_IMAGE_TAG} AS production
 
@@ -58,17 +46,7 @@ ENV GIT_COMMIT=${GIT_COMMIT} \
     BUILD_DATE=${BUILD_DATE} \
     SERVICE_VERSION=${SERVICE_VERSION} \
     COQUI_TOS_AGREED=1 \
-    PYTHONUNBUFFERED=1 \
-    NUMBA_CACHE_DIR=/tmp/numba_cache \
-    MPLCONFIGDIR=/tmp/matplotlib \
-    TRANSFORMERS_CACHE=/tmp/transformers_cache \
-    HF_HOME=/tmp/transformers_cache \
-    TORCH_HOME=/tmp/torch_cache \
-    XDG_CACHE_HOME=/tmp
-
-# --- Cache dizinlerini oluştur ---
-RUN mkdir -p /tmp/numba_cache /tmp/matplotlib /tmp/transformers_cache /tmp/torch_cache && \
-    chmod 777 /tmp/numba_cache /tmp/matplotlib /tmp/transformers_cache /tmp/torch_cache
+    PYTHONUNBUFFERED=1
 
 # --- Çalışma zamanı sistem bağımlılıkları ---
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -79,13 +57,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-
-# --- Builder'dan dosyaları kopyala ---
-# 7.45 GB
-COPY --from=builder /usr/local /usr/local
-# 1.8 GB
-COPY --from=builder --chown=appuser:appuser /root/.local/share/tts /home/appuser/.local/share/tts
-# 9.30 GB ~
+# --- Bağımlılıkları Kopyala ---
+COPY --from=builder /install /usr/local
 
 # --- Güvenlik ve uygulama kurulumu ---
 RUN useradd -m -u 1001 appuser
@@ -95,4 +68,6 @@ RUN chown -R appuser:appuser /app
 
 USER appuser
 
+# Model, `/home/appuser/.local/share/tts` altına indirilecek.
+# Bu dizin, bir Docker Volume olarak bağlanmalıdır.
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "14030", "--timeout-graceful-shutdown", "15"]
