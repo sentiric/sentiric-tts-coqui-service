@@ -1,22 +1,16 @@
-# app/core/config.py
-
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import Field
-from typing import Optional # Optional'ı import edelim
-
+from typing import Optional
 class Settings(BaseSettings):
     PROJECT_NAME: str = "Sentiric Coqui-TTS Service"
     API_V1_STR: str = "/api/v1"
     ENV: str = Field("production", validation_alias="ENV")
     LOG_LEVEL: str = Field("INFO", validation_alias="LOG_LEVEL")
 
-    # --- YENİ: GÖZLEMLENEBİLİRLİK İÇİN VERSİYON BİLGİLERİ ---
-    # Bu değişkenler Dockerfile'dan ENV olarak set edilir.
     SERVICE_VERSION: str = Field("0.0.0", validation_alias="SERVICE_VERSION")
     GIT_COMMIT: str = Field("unknown", validation_alias="GIT_COMMIT")
     BUILD_DATE: str = Field("unknown", validation_alias="BUILD_DATE")
 
-    # --- MEVCUT TTS AYARLARI ---
     TTS_COQUI_PORT: int = Field(14030, validation_alias="TTS_COQUI_SERVICE_HTTP_PORT")
     TTS_MODEL_NAME: str = Field(
         "tts_models/multilingual/multi-dataset/xtts_v2", 
