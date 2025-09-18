@@ -1,5 +1,5 @@
 # ======================================================================================
-#    SENTIRIC COQUI TTS SERVICE - POETRY & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.5
+#    SENTIRIC COQUI TTS SERVICE - POETRY & ÜRETİM OPTİMİZASYONLU DOCKERFILE v2.6
 # ======================================================================================
 
 # --- GLOBAL BUILD ARGÜMANLARI ---
@@ -19,7 +19,6 @@ WORKDIR /app
 ENV PIP_BREAK_SYSTEM_PACKAGES=1 \
     PIP_NO_CACHE_DIR=1 \
     POETRY_NO_INTERACTION=1 \
-    # Sanal ortamı proje klasörü içinde oluştur (.venv)
     POETRY_VIRTUALENVS_IN_PROJECT=true
 
 # --- Sistem Bağımlılıkları (git dahil) ---
@@ -36,9 +35,12 @@ RUN pip install --no-cache-dir poetry
 # Sadece bağımlılık tanımlarını kopyala
 COPY poetry.lock pyproject.toml ./
 
+# --- DÜZELTME BURADA ---
 # Bağımlılıkları kur (üretim için, dev bağımlılıkları hariç)
-# --no-root komutu projenin kendisini kurmasını engeller, sadece bağımlılıklar kurulur.
-RUN poetry install --no-dev --no-root --sync
+# --no-dev yerine --without dev kullanılıyor.
+RUN poetry install --without dev --no-root --sync
+# --- DÜZELTME SONU ---
+
 
 # ======================================================================================
 #    STAGE 2: PRODUCTION - Hafif ve temiz imaj
@@ -56,7 +58,6 @@ ENV GIT_COMMIT=${GIT_COMMIT} \
     SERVICE_VERSION=${SERVICE_VERSION} \
     COQUI_TOS_AGREED=1 \
     PYTHONUNBUFFERED=1 \
-    # Poetry sanal ortamını PATH'e ekle
     PATH="/app/.venv/bin:$PATH"
 
 # --- Çalışma zamanı sistem bağımlılıkları ---
