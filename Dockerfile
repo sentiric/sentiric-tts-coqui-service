@@ -79,5 +79,5 @@ COPY --chown=appuser:appgroup scripts/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 USER appuser
-
+EXPOSE 14030 14031 14032
 ENTRYPOINT ["/entrypoint.sh"]
