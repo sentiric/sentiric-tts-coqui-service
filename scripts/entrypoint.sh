@@ -15,4 +15,4 @@ echo "✅ Cache dizinleri hazırlandı."
 echo "🚀 Uvicorn sunucusu başlatılıyor..."
 
 # --- DÜZELTME: uvicorn komutunu tam yoluyla çağırıyoruz ---
-exec /app/.venv/bin/uvicorn app.main:app --host "0.0.0.0" --port "14030" --timeout-graceful-shutdown 15 --log-config null
+exec /app/.venv/bin/uvicorn app.main:app --host "0.0.0.0" --port "14030" --timeout-graceful-shutdown 15 --no-access-log
