@@ -1,13 +1,13 @@
 const SAMPLE_RATE = 24000;
 let audioContext = null;
 let analyser = null;
-let nextStartTime = 0; // Sesin ne zaman çalacağını takip eden zamanlayıcı
+let nextStartTime = 0; 
 let mediaRecorder = null;
 let audioChunks = [];
 let sourceNodes = []; 
 
-// İlk başlangıç gecikmesi (Tarayıcının uyanması için)
-const INITIAL_BUFFER_DELAY = 0.5; 
+// Backend'den sessizlik geldiği için burada delay SIFIR
+const INITIAL_BUFFER_DELAY = 0.0; 
 
 function initAudioContext(sampleRate = 24000) {
     if (!audioContext || audioContext.sampleRate !== sampleRate) {
@@ -18,14 +18,11 @@ function initAudioContext(sampleRate = 24000) {
         analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    if (audioContext.state === 'suspended') {
-        audioContext.resume();
-    }
+    if (audioContext.state === 'suspended') { audioContext.resume(); }
 }
 
 async function playChunk(float32Array, sampleRate = 24000) {
     initAudioContext(sampleRate);
-    
     if (window.isStopRequested) return;
 
     const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate);
@@ -38,20 +35,16 @@ async function playChunk(float32Array, sampleRate = 24000) {
     
     const currentTime = audioContext.currentTime;
 
-    // --- STREAM FIX ZAMANLAMA MANTIĞI ---
+    // --- SADE VE GÜÇLÜ ZAMANLAMA ---
     
-    // Durum 1: İlk Paket (Yepyeni bir akış başlıyor)
-    if (nextStartTime === 0) {
-        // Tarayıcıyı uyandırmak için güvenli bir boşluk bırak
-        nextStartTime = currentTime + INITIAL_BUFFER_DELAY;
-    } 
-    // Durum 2: Buffer Underrun (İnternet yavaşladı, ses yetişmedi, zaman geride kaldı)
-    else if (nextStartTime < currentTime) {
-        // Geriye dönük çalamayız, o yüzden "şu an"a atla ve minik bir boşluk bırak
-        nextStartTime = currentTime + 0.1;
+    // 1. Eğer bu yeni bir başlangıçsa VEYA çok geride kaldıysak
+    // (currentTime > nextStartTime means we are lagging behind)
+    if (nextStartTime === 0 || nextStartTime < currentTime) {
+        // En yakındaki "geleceğe" zamanla (10ms)
+        nextStartTime = currentTime + 0.01;
     }
-    // Durum 3: Normal Akış (nextStartTime gelecekte bir yer, sorun yok, ucuna ekle)
-    
+
+    // 2. Parçayı sıradaki zamana yerleştir
     source.start(nextStartTime);
     sourceNodes.push(source);
     
@@ -60,7 +53,7 @@ async function playChunk(float32Array, sampleRate = 24000) {
         if (index > -1) sourceNodes.splice(index, 1);
     };
 
-    // Bir sonraki parçanın başlama zamanını güncelle
+    // 3. Bir sonraki parçanın zamanını belirle
     nextStartTime += buffer.duration;
 }
 
@@ -74,21 +67,13 @@ function convertInt16ToFloat32(int16Data) {
 
 function resetAudioState() {
     window.isStopRequested = true;
-    
-    // Çalan her şeyi durdur
-    sourceNodes.forEach(node => {
-        try { node.stop(); node.disconnect(); } catch(e) {}
-    });
+    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
     sourceNodes = [];
-    
-    // Zamanlayıcıyı kesinlikle sıfırla
     nextStartTime = 0;
-    
-    // Stop flag'ini kısa süre sonra kaldır
     setTimeout(() => { window.isStopRequested = false; }, 200);
 }
 
-// ... (initVisualizer, startRecording, stopRecording, clearRecordingData AYNI KALACAK) ...
+// ... (Geri kalanı aynı) ...
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
@@ -137,7 +122,4 @@ function stopRecording() {
         if(window.toggleMicUI) window.toggleMicUI(false);
     }
 }
-function clearRecordingData() { 
-    window.recordedBlob = null; 
-    audioChunks = []; 
-}
+function clearRecordingData() { window.recordedBlob = null; audioChunks = []; }

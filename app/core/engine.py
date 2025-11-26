@@ -204,6 +204,13 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
+                # --- FIX 1: SILENCE PREAMBLE (HOPARLÖR UYANDIRMA) ---
+                # Tarayıcıya boş ses paketleri göndererek buffer'ı dolduruyoruz.
+                # JS tarafındaki "Cutoff" sorununu bu çözer.
+                silence_chunk = np.zeros(1024, dtype=np.int16).tobytes()
+                for _ in range(5): # 5 paket sessizlik
+                    yield silence_chunk
+
                 gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                 chunks = self.model.inference_stream(
                     text, lang, gpt_cond_latent, speaker_embedding,
@@ -215,7 +222,11 @@ class TTSEngine:
                 for chunk in chunks:
                     if settings.DEVICE == "cuda": chunk = chunk.cpu()
                     wav_chunk_float = chunk.numpy()
-                    wav_chunk_float = wav_chunk_float * 1.5
+                    
+                    # --- FIX 2: GAIN REMOVED (SES PATLAMASI FIX) ---
+                    # 1.5 katına çıkarmak yerine ham veriyi gönderiyoruz.
+                    # Eğer çok düşük gelirse 1.0 - 1.2 arası idealdir, 1.5 clipping yapar.
+                    
                     np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
                     wav_int16 = (wav_chunk_float * 32767).astype(np.int16)
                     yield wav_int16.tobytes()
@@ -303,9 +314,9 @@ class TTSEngine:
         try:
             cmd = ['ffmpeg', '-y', '-f', 'wav', '-i', 'pipe:0']
             
-            # --- FIX: CUTOFF SORUNU İÇİN SERVER-SIDE SESSİZLİK ---
-            # 'adelay' filtresi ile her kanala 250ms gecikme ekliyoruz.
-            # 'loudnorm' ile ses seviyesini sabitliyoruz.
+            # --- FIX: ADELAY SADECE NON-STREAM İÇİN ---
+            # Stream modunda bu fonksiyon çağrılmıyor, o yüzden sorun yok.
+            # Normal modda 250ms gecikme ekliyoruz ki tarayıcı başını yutmasın.
             filter_chain = 'adelay=250|250,loudnorm=I=-16:TP=-1.5:LRA=11'
             cmd += ['-af', filter_chain]
             
