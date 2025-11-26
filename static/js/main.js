@@ -1,20 +1,16 @@
-// --- GLOBAL DURUM ---
+// Global State
 const State = {
     isPlaying: false,
     abortController: null
 };
 
-// --- DENETLEYİCİLER (Controllers) ---
+// --- CONTROLLERS ---
 const Controllers = {
-    
-    // 1. Veri Yükleme İşlemleri
     async loadSpeakers() {
         try {
             const data = await API.getSpeakers();
             UI.populateSpeakers(data);
-        } catch (e) {
-            console.error("Speakers loading failed:", e);
-        }
+        } catch (e) { console.error("Speakers loading failed:", e); }
     },
 
     async loadHistory() {
@@ -23,9 +19,7 @@ const Controllers = {
         try {
             const data = await API.getHistory();
             UI.renderHistory(data);
-        } catch (e) {
-            console.error("History loading failed:", e);
-        }
+        } catch (e) { console.error("History loading failed:", e); }
     },
 
     async rescanSpeakers() {
@@ -34,22 +28,16 @@ const Controllers = {
             const res = await API.refreshSpeakers();
             alert(res.message);
             await this.loadSpeakers();
-        } catch (e) {
-            alert("Error: " + e.message);
-        }
+        } catch (e) { alert("Error: " + e.message); }
     },
 
-    // 2. Geçmiş Yönetimi
     async clearAllHistory() {
         if (!confirm('WARNING: This will delete ALL history and cache permanently.')) return;
         try {
             const res = await API.deleteAllHistory();
             alert(`Cleanup Complete. Deleted Files: ${res.files_deleted}`);
             await this.loadHistory();
-        } catch (e) {
-            console.error(e);
-            alert("Cleanup failed.");
-        }
+        } catch (e) { console.error(e); alert("Cleanup failed."); }
     },
 
     async deleteHistory(filename) {
@@ -57,116 +45,79 @@ const Controllers = {
         try {
             const success = await API.deleteHistory(filename);
             if (success) {
-                // UI'dan anında kaldır (Yeniden yükleme yapmadan)
                 const btn = document.querySelector(`button[onclick*='${filename}']`);
-                if (btn) {
-                    btn.closest('.group').remove();
-                }
-            } else {
-                alert("Failed to delete.");
-            }
-        } catch (e) {
-            console.error(e);
-        }
+                if (btn) btn.closest('.group').remove();
+            } else { alert("Failed to delete."); }
+        } catch (e) { console.error(e); }
     },
 
     playHistory(filename) {
         if (window.resetAudioState) window.resetAudioState();
-        
         const url = `/api/history/audio/${filename}`;
         const player = document.getElementById('classicPlayer');
-        if (player) {
-            player.src = url;
-            player.play();
-        }
+        if (player) { player.src = url; player.play(); }
     },
 
-    // 3. Oynatma Kontrolü
     stopPlayback(isUserInitiated = true) {
         if (isUserInitiated) {
-            console.log("Playback stopped by user.");
-            
-            // İsteği iptal et
-            if (State.abortController) {
-                State.abortController.abort();
-                State.abortController = null;
-            }
-            
-            // Audio Core'u sıfırla
+            if (State.abortController) { State.abortController.abort(); State.abortController = null; }
             if (window.resetAudioState) window.resetAudioState();
-            
-            // HTML Player'ı durdur
             const player = document.getElementById('classicPlayer');
-            if (player) {
-                player.pause();
-                player.currentTime = 0;
-            }
-        } else {
-            console.log("Playback finished naturally.");
+            if (player) { player.pause(); player.currentTime = 0; }
         }
-
         UI.setPlayingState(false);
         State.isPlaying = false;
         UI.setStatus("READY");
     },
 
-    // 4. Klonlama ve Dosya Yönetimi
+    // --- CLONE LOGIC FIX ---
     handleFileSelect(event) {
         const file = event.target.files[0];
         if (file) {
+            // 1. Önceki mikrofon kaydını sil
             if (window.clearRecordingData) window.clearRecordingData();
-            UI.resetCloneUI();
+            
+            // 2. UI'ı temizle AMA input'u silme (false parametresi)
+            UI.resetCloneUI(false); 
+            
+            // 3. İsmi güncelle
             UI.updateFileName(file.name);
         }
     },
 
     handleRecordingComplete() {
-        // Mikrofon kaydı bittiğinde dosya inputunu temizle
-        UI.resetCloneUI(); 
+        // Kayıt bittiğinde dosya inputunu silebiliriz (true)
+        UI.resetCloneUI(true); 
         UI.showRecordingSuccess();
     },
 
     clearCloneData() {
         if (window.clearRecordingData) window.clearRecordingData();
-        UI.resetCloneUI();
+        UI.resetCloneUI(true); // Her şeyi sil
     },
 
-    // 5. ANA ÜRETİM FONKSİYONU (GENERATE)
     async handleGenerate() {
-        // Eğer zaten çalıyorsa, butona basınca DURDUR
-        if (State.isPlaying) {
-            this.stopPlayback(true);
-            return;
-        }
+        if (State.isPlaying) { this.stopPlayback(true); return; }
 
-        // Validasyon
-        const textInput = document.getElementById('textInput');
-        const text = textInput ? textInput.value.trim() : "";
+        const text = document.getElementById('textInput').value.trim();
         if (!text) return alert("Please enter text to synthesize.");
 
         const isStream = document.getElementById('stream').checked;
-        if (text.startsWith('<speak>') && isStream) {
-            alert("SSML is not supported in Streaming mode.");
-            return;
-        }
+        if (text.startsWith('<speak>') && isStream) { alert("SSML is not supported in Streaming mode."); return; }
 
-        // Başlatma
         UI.setPlayingState(true);
         State.isPlaying = true;
         const startTime = performance.now();
         let firstChunk = false;
 
-        // Audio Engine Hazırlığı
         if (window.initAudioContext) window.initAudioContext();
         if (window.resetAudioState) window.resetAudioState();
 
         try {
             State.abortController = new AbortController();
-            
             const modePanel = document.getElementById('panel-std');
             const isCloneMode = modePanel.classList.contains('hidden');
             
-            // Ortak Parametreler
             const params = {
                 text: text,
                 language: document.getElementById('lang').value,
@@ -183,70 +134,48 @@ const Controllers = {
             let response;
 
             if (!isCloneMode) {
-                // STANDARD MODE
                 params.speaker_idx = document.getElementById('speaker').value;
                 response = await API.generateTTS(params, State.abortController.signal);
             } else {
-                // CLONE MODE
-                const formData = new FormData();
-                
+                const fd = new FormData();
                 if (window.recordedBlob) {
-                    formData.append('files', window.recordedBlob, 'recording.webm');
+                    fd.append('files', window.recordedBlob, 'recording.webm');
                 } else {
                     const fileInput = document.getElementById('ref_audio');
                     const file = fileInput ? fileInput.files[0] : null;
                     if (!file) throw new Error("Please upload a file or record audio for cloning.");
-                    formData.append('files', file);
+                    fd.append('files', file);
                 }
-                
-                // JSON parametreleri FormData'ya ekle
-                Object.entries(params).forEach(([key, value]) => formData.append(key, value));
-                
+                Object.entries(params).forEach(([key, value]) => fd.append(key, value));
                 UI.setStatus("ANALYZING VOICE...");
-                response = await API.generateClone(formData, State.abortController.signal);
+                response = await API.generateClone(fd, State.abortController.signal);
             }
 
-            // YANIT İŞLEME
             if (isStream) {
-                // --- STREAMING ---
                 const reader = response.body.getReader();
-                
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    
                     if (!firstChunk) {
                         firstChunk = true;
                         UI.updateLatency(Math.round(performance.now() - startTime));
                         UI.setStatus("STREAMING");
                     }
-                    
-                    // Byte -> Float32 Dönüşümü
+                    // Byte -> Float32 (Int16 to Float)
                     const float32Data = new Float32Array(value.buffer.byteLength / 2);
                     const int16Data = new Int16Array(value.buffer);
-                    
                     for (let i = 0; i < int16Data.length; i++) {
                         const v = int16Data[i];
                         float32Data[i] = v >= 0 ? v / 32767 : v / 32768;
                     }
-                    
                     await playChunk(float32Data, 24000);
                 }
-                
-                // İndirme bitti sinyali
                 if (window.notifyDownloadFinished) window.notifyDownloadFinished();
-                
             } else {
-                // --- NON-STREAMING ---
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
                 const player = document.getElementById('classicPlayer');
-                
-                if (player) {
-                    player.src = url;
-                    player.play();
-                }
-                
+                if (player) { player.src = url; player.play(); }
                 UI.updateLatency(Math.round(performance.now() - startTime));
                 UI.setStatus("PLAYING");
                 await this.loadHistory();
@@ -261,27 +190,23 @@ const Controllers = {
     }
 };
 
-// --- GLOBAL BRIDGE (HTML Bağlantıları) ---
-// Bu kısım index.html içindeki onclick="" eventlerinin çalışmasını sağlar.
-
+// --- GLOBAL BRIDGE (HTML onclick Desteği) ---
+// Controller nesnesini ve metodlarını global scope'a açıyoruz.
 window.Controllers = Controllers;
 window.handleGenerate = () => Controllers.handleGenerate();
 
-// Legacy Toggle Logic (CSS class manipülasyonu içerdiği için burada tutuldu)
+// Legacy Toggle/SetMode Fonksiyonları
 window.toggleHistory = () => {
     const drawer = document.getElementById('historyDrawer');
     const overlay = document.getElementById('historyOverlay');
-    
     if (!drawer.classList.contains('translate-x-full')) {
-        // Kapat
         drawer.classList.add('translate-x-full');
         overlay.classList.remove('opacity-100');
         setTimeout(() => overlay.classList.add('hidden'), 300);
     } else {
-        // Aç
         drawer.classList.remove('translate-x-full');
         overlay.classList.remove('hidden');
-        void overlay.offsetWidth; // Trigger reflow
+        void overlay.offsetWidth;
         overlay.classList.add('opacity-100');
         Controllers.loadHistory();
     }
@@ -312,7 +237,6 @@ window.setMode = (mode) => {
 window.toggleAdvanced = () => {
     const panel = document.getElementById('advanced-panel');
     const icon = document.getElementById('adv-icon');
-    
     if (panel.classList.contains('accordion-open')) {
         panel.classList.remove('accordion-open');
         icon.style.transform = 'rotate(0deg)';
@@ -322,25 +246,22 @@ window.toggleAdvanced = () => {
     }
 };
 
-// Audio Core Callback Bağlantıları
+// Audio Core Callbacks
 window.toggleMicUI = (isRec) => UI.showRecordingState(isRec);
 window.onRecordingComplete = () => Controllers.handleRecordingComplete();
 window.clearRecordingUI = () => Controllers.clearCloneData();
 window.onAudioPlaybackComplete = () => Controllers.stopPlayback(false);
 
-// --- BAŞLATMA (Initialization) ---
+// --- INIT ---
 document.addEventListener('DOMContentLoaded', () => {
     if (window.initUIEvents) window.initUIEvents();
-    
     Controllers.loadSpeakers();
     
-    // Dosya Yükleme Event Listener
     const fileInput = document.getElementById('ref_audio');
     if (fileInput) {
         fileInput.addEventListener('change', (e) => Controllers.handleFileSelect(e));
     }
     
-    // Klasik Oynatıcı Bitiş Kontrolü
     const player = document.getElementById('classicPlayer');
     if (player) {
         player.onended = () => {
