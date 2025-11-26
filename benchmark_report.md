@@ -1,13 +1,13 @@
 
 # 📊 XTTS Service Benchmark Report
-**Date:** 2025-11-26 20:23:48
+**Date:** 2025-11-26 23:16:32
 **Environment:** Production Candidate
 
 ## 1. Key Performance Indicators (KPIs)
 | Metric | Result | Target | Status |
 | :--- | :--- | :--- | :--- |
-| **RTF (Real-Time Factor)** | `0.0011` | < 0.30 | ✅ PASS |
-| **Streaming Latency (TTFB)** | `294 ms` | < 500 ms | ✅ PASS |
+| **RTF (Real-Time Factor)** | `0.0441` | < 0.30 | ✅ PASS |
+| **Streaming Latency (TTFB)** | `508 ms` | < 500 ms | ⚠️ SLOW |
 | **Queue Stability** | `5/5` | 100% | ✅ STABLE |
 
 ## 2. Analysis

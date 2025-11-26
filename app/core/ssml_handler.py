@@ -1,13 +1,14 @@
-import xml.etree.ElementTree as ET
 import re
 import logging
 from typing import List, Dict, Any
+# Standart kütüphane yerine güvenli parser kullanıyoruz
+from defusedxml import ElementTree as ET 
 
 logger = logging.getLogger("SSML-HANDLER")
 
 class SSMLHandler:
     """
-    Görevi: SSML (Speech Synthesis Markup Language) metinlerini parse etmek
+    Görevi: SSML (Speech Synthesis Markup Language) metinlerini GÜVENLİ BİR ŞEKİLDE parse etmek
     ve inferans motorunun anlayacağı segmentlere bölmek.
     """
 
@@ -22,13 +23,14 @@ class SSMLHandler:
             ssml_text = ssml_text.replace("&", "&amp;") 
             
             # Root wrapper ekle (Parser hatasını önlemek için)
-            parser = ET.XMLParser()
+            # defusedxml string parse ederken fromstring kullanır
             if not ssml_text.strip().startswith("<root>"):
                 root_text = f"<root>{ssml_text}</root>"
             else:
                 root_text = ssml_text
 
-            root = ET.fromstring(root_text, parser=parser)
+            # GÜVENLİ PARSE İŞLEMİ (Billion Laughs korumalı)
+            root = ET.fromstring(root_text)
             segments = []
             
             def process_element(element, current_params):
@@ -88,9 +90,10 @@ class SSMLHandler:
 
             process_element(root, default_params)
             
-            # Fallback: Eğer parse sonucu boşsa (sadece tagler varsa), ham metni döndür
+            # Fallback: Parse sonucu boşsa ham metni döndür (Ama tagleri temizle)
             if not segments: 
-                return [{'type': 'text', 'content': "".join(root.itertext()), 'params': default_params}]
+                clean_text = "".join(root.itertext())
+                return [{'type': 'text', 'content': clean_text, 'params': default_params}]
                 
             return segments
 
