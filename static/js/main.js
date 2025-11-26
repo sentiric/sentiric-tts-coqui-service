@@ -1,39 +1,38 @@
-// Global State
 const State = { isPlaying: false, abortController: null };
 
-// --- CONTROLLERS ---
 const Controllers = {
+    // ... (Diğer metodlar AYNI) ...
     async loadSpeakers() { try{UI.populateSpeakers(await API.getSpeakers());}catch(e){console.error(e);} },
     async loadHistory() { try{UI.renderHistory(await API.getHistory());}catch(e){console.error(e);} },
     async rescanSpeakers() { if(confirm("Rescan?")) try{await API.refreshSpeakers();this.loadSpeakers();}catch(e){alert(e);} },
     async clearAllHistory() { if(confirm("Delete All?")) try{await API.deleteAllHistory();this.loadHistory();}catch(e){console.error(e);} },
     async deleteHistory(f) { if(confirm("Delete?")) try{if(await API.deleteHistory(f)) document.querySelector(`button[onclick*='${f}']`).closest('.group').remove();}catch(e){console.error(e);} },
-    
-    playHistory(f) { 
-        if(window.resetAudioState) window.resetAudioState();
-        const p = document.getElementById('classicPlayer'); 
-        if(p){p.src=`/api/history/audio/${f}`; p.play();} 
-    },
+    playHistory(f) { if(window.resetAudioState) window.resetAudioState(); const p = document.getElementById('classicPlayer'); if(p){p.src=`/api/history/audio/${f}`; p.play();} },
+    stopPlayback(isUserInitiated=true) { if(isUserInitiated) { if(State.abortController){State.abortController.abort();State.abortController=null;} if(window.resetAudioState)window.resetAudioState(); const p=document.getElementById('classicPlayer');if(p){p.pause();p.currentTime=0;} } UI.setPlayingState(false); State.isPlaying=false; UI.setStatus("READY"); },
 
-    stopPlayback(isUserInitiated=true) {
-        if(isUserInitiated) {
-            if(State.abortController){State.abortController.abort();State.abortController=null;}
-            if(window.resetAudioState)window.resetAudioState();
-            const p=document.getElementById('classicPlayer');if(p){p.pause();p.currentTime=0;}
-        }
-        UI.setPlayingState(false); State.isPlaying=false; UI.setStatus("READY");
-    },
-
+    // --- CLONE LOGIC ---
     handleFileSelect(e) {
         const f = e.target.files[0];
-        if(f) { if(window.clearRecordingData)window.clearRecordingData(); UI.resetCloneUI(); UI.updateFileName(f.name); }
+        if(f) { 
+            if(window.clearRecordingData) window.clearRecordingData(); 
+            // FIX: false parametresi ile inputu silme diyoruz
+            UI.resetCloneUI(false); 
+            UI.updateFileName(f.name); 
+        }
     },
-    handleRecordingComplete() { UI.resetCloneUI(); UI.showRecordingSuccess(); },
-    clearCloneData() { if(window.clearRecordingData)window.clearRecordingData(); UI.resetCloneUI(); },
+    handleRecordingComplete() { 
+        // Mikrofon kaydı bittiğinde inputu silebiliriz (true)
+        UI.resetCloneUI(true); 
+        UI.showRecordingSuccess(); 
+    },
+    clearCloneData() { 
+        if(window.clearRecordingData) window.clearRecordingData(); 
+        UI.resetCloneUI(true); // X butonuna basınca her şeyi sil
+    },
 
+    // ... (handleGenerate AYNI) ...
     async handleGenerate() {
         if(State.isPlaying) { this.stopPlayback(true); return; }
-        
         const text = document.getElementById('textInput').value.trim();
         if(!text) return alert("Text required.");
         const isStream = document.getElementById('stream').checked;
@@ -79,46 +78,14 @@ const Controllers = {
 
             if(isStream) {
                 const reader = res.body.getReader();
-                
-                // --- FIX: BUFFER ALIGNMENT LOGIC ---
-                let leftover = new Uint8Array(0); // Artan byte'ları tutmak için
-
                 while(true) {
                     const {done, value} = await reader.read();
                     if(done) break;
-
-                    // 1. Önceki artan veriyle yeniyi birleştir
-                    const combined = new Uint8Array(leftover.length + value.length);
-                    combined.set(leftover);
-                    combined.set(value, leftover.length);
-
-                    // 2. Çift sayı olup olmadığını kontrol et
-                    const remainder = combined.length % 2;
-                    const usableLength = combined.length - remainder;
-
-                    // 3. Kullanılabilir kısmı al (Çift sayı uzunluğunda)
-                    const usableData = combined.subarray(0, usableLength);
-                    
-                    // 4. Artan byte'ı (varsa) sakla
-                    leftover = combined.subarray(usableLength);
-
-                    if (usableData.length > 0) {
-                        if(!firstChunk) { 
-                            firstChunk=true; 
-                            UI.updateLatency(Math.round(performance.now()-startTime)); 
-                            UI.setStatus("STREAMING"); 
-                        }
-                        
-                        // Artık Int16Array hata vermez çünkü uzunluk kesinlikle 2'nin katı
-                        const f32 = new Float32Array(usableData.length / 2);
-                        const i16 = new Int16Array(usableData.buffer, usableData.byteOffset, usableData.length / 2);
-                        
-                        for(let i=0; i<i16.length; i++) {
-                            const v = i16[i];
-                            f32[i] = v >= 0 ? v/32767 : v/32768;
-                        }
-                        await playChunk(f32, 24000);
-                    }
+                    if(!firstChunk) { firstChunk=true; UI.updateLatency(Math.round(performance.now()-startTime)); UI.setStatus("STREAMING"); }
+                    const f32 = new Float32Array(value.buffer.byteLength/2);
+                    const i16 = new Int16Array(value.buffer);
+                    for(let i=0; i<i16.length; i++) f32[i] = i16[i] >= 0 ? i16[i]/32767 : i16[i]/32768;
+                    await playChunk(f32, 24000);
                 }
                 if(window.notifyDownloadFinished) window.notifyDownloadFinished();
             } else {
