@@ -1,5 +1,6 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response
 from fastapi.responses import StreamingResponse, FileResponse
+from typing import List  # <-- EKLENDİ
 import asyncio
 import os
 import shutil
@@ -41,7 +42,6 @@ async def delete_all_history():
         history_manager.clear_all()
         files_deleted = 0
         
-        # History klasörünü temizle
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
                 try: 
@@ -50,14 +50,12 @@ async def delete_all_history():
                 except: 
                     pass
         
-        # Cache klasörünü temizle
         for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
             try: 
                 os.remove(f)
             except: 
                 pass
                 
-        # Latents klasörünü temizle
         for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
             try: 
                 os.remove(f)
