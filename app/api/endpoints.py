@@ -13,9 +13,7 @@ from app.core.engine import tts_engine
 from app.core.config import settings
 from app.api.schemas import TTSRequest
 from app.core.history import history_manager
-from app.core.logging_utils import setup_logging
 
-# Logger'ı yapılandır
 logger = logging.getLogger("API")
 router = APIRouter()
 
@@ -103,7 +101,7 @@ async def refresh_speakers_cache():
     return {"status": "ok", "data": report}
 
 @router.post("/api/tts")
-async def generate_speech(request: TTSRequest, response: Response):
+async def generate_speech(request: TTSRequest): # response: Response parametresi kaldırıldı
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
@@ -116,31 +114,17 @@ async def generate_speech(request: TTSRequest, response: Response):
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             
-            # --- VCA METRICS CALCULATION ---
             process_time = time.perf_counter() - start_time
             char_count = len(request.text)
             
-            # RTF Hesabı:
-            # 24000 Hz, 16-bit (2 bytes), 1 Kanal = 48000 bytes/sec
             audio_duration_sec = len(audio_bytes) / 48000
             rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
 
-            # Governance Log
             logger.info("usage.recorded", extra={
-                "event_type": "usage.recorded",
-                "resource_type": "tts_character",
-                "amount": char_count,
-                "model": settings.MODEL_NAME,
-                "duration_ms": round(process_time * 1000, 2),
-                "rtf": round(rtf, 4),
-                "mode": "standard"
+                "event_type": "usage.recorded", "resource_type": "tts_character",
+                "amount": char_count, "model": settings.MODEL_NAME,
+                "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "standard"
             })
-
-            # HTTP Headers for UI HUD (X-VCA)
-            response.headers["X-VCA-Chars"] = str(char_count)
-            response.headers["X-VCA-Time"] =f"{process_time:.3f}"
-            response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
-            # -------------------------------
 
             ext = "wav"
             if request.output_format == "mp3": ext = "mp3"
@@ -156,14 +140,24 @@ async def generate_speech(request: TTSRequest, response: Response):
             media_type = "audio/wav"
             if ext == "mp3": media_type = "audio/mpeg"
             elif ext == "opus": media_type = "audio/ogg"
-            return Response(content=audio_bytes, media_type=media_type)
+            
+            # 1. Nihai yanıt objesini oluştur
+            final_response = Response(content=audio_bytes, media_type=media_type)
+            
+            # 2. Başlıkları bu objeye ekle
+            final_response.headers["X-VCA-Chars"] = str(char_count)
+            final_response.headers["X-VCA-Time"] =f"{process_time:.3f}"
+            final_response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
+            
+            # 3. Hazırlanan objeyi döndür
+            return final_response
+            
     except Exception as e:
         logger.error(f"TTS Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/tts/clone")
-async def generate_speech_clone(
-    response: Response,
+async def generate_speech_clone( # response: Response parametresi kaldırıldı
     text: str = Form(...),
     language: str = Form("en"),
     files: List[UploadFile] = File(...),
@@ -208,27 +202,16 @@ async def generate_speech_clone(
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
             await cleanup_files(saved_files)
             
-            # --- VCA METRICS ---
             process_time = time.perf_counter() - start_time
             char_count = len(text)
-            # Clone RTF hesabı (yaklaşık)
             audio_duration_sec = len(audio_bytes) / 48000
             rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
 
             logger.info("usage.recorded", extra={
-                "event_type": "usage.recorded",
-                "resource_type": "tts_character",
-                "amount": char_count,
-                "model": settings.MODEL_NAME,
-                "duration_ms": round(process_time * 1000, 2),
-                "rtf": round(rtf, 4),
-                "mode": "clone"
+                "event_type": "usage.recorded", "resource_type": "tts_character",
+                "amount": char_count, "model": settings.MODEL_NAME,
+                "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "clone"
             })
-
-            response.headers["X-VCA-Chars"] = str(char_count)
-            response.headers["X-VCA-Time"] = f"{process_time:.3f}"
-            response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
-            # -------------------
             
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"
@@ -239,7 +222,13 @@ async def generate_speech_clone(
             
             media_type = "audio/wav"
             if ext == "mp3": media_type = "audio/mpeg"
-            return Response(content=audio_bytes, media_type=media_type)
+            
+            # Aynı düzeltme burada da yapılıyor
+            final_response = Response(content=audio_bytes, media_type=media_type)
+            final_response.headers["X-VCA-Chars"] = str(char_count)
+            final_response.headers["X-VCA-Time"] = f"{process_time:.3f}"
+            final_response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
+            return final_response
             
     except Exception as e:
         await cleanup_files(saved_files)
