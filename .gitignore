@@ -36,3 +36,4 @@ output.wav
 *.log
 history
 cache
+.venv_test
