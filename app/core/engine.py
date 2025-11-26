@@ -423,4 +423,15 @@ class TTSEngine:
             cmd += ['-ar', str(sample_rate), 'pipe:1']
             
             process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            out, _ = process.communicate(input=wav
+            out, _ = process.communicate(input=wav_bytes)
+            
+            if process.returncode != 0: 
+                logger.warning(f"FFmpeg failed. Returning raw WAV.")
+                return wav_bytes
+                
+            return out
+        except Exception as e:
+            logger.error(f"Audio processing error: {e}")
+            return wav_bytes
+
+tts_engine = TTSEngine()
