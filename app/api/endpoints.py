@@ -7,6 +7,7 @@ import shutil
 import glob
 import uuid
 import logging
+import time 
 
 from app.core.engine import tts_engine
 from app.core.config import settings
@@ -109,12 +110,30 @@ async def refresh_speakers_cache():
 async def generate_speech(request: TTSRequest):
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
+    
+    start_time = time.perf_counter() # VCA Ölçümü Başlat
+    
     try:
         params = request.model_dump()
         if request.stream:
             return StreamingResponse(tts_engine.synthesize_stream(params), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
+            
+            # VCA Metrik Hesaplama
+            process_time = time.perf_counter() - start_time
+            char_count = len(request.text)
+            
+            # Governance VCA Standardı Loglama
+            logger.info("usage.recorded", extra={
+                "event_type": "usage.recorded",
+                "resource_type": "tts_character",
+                "amount": char_count,
+                "model": settings.MODEL_NAME,
+                "duration_ms": round(process_time * 1000, 2),
+                "mode": "standard"
+            })
+
             ext = "wav"
             if request.output_format == "mp3": ext = "mp3"
             elif request.output_format == "opus": ext = "opus"
@@ -151,6 +170,7 @@ async def generate_speech_clone(
     if not text or not text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
+    start_time = time.perf_counter() # VCA Başlangıç
     saved_files = []
     try:
         # Dosyaları diske kaydetme (CPU bound işlem değil ama I/O)
@@ -179,13 +199,27 @@ async def generate_speech_clone(
                     for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
                         yield chunk
                 finally:
-                    # BURASI ÖNEMLİ: await kullanarak asenkron temizlik
+                    # Stream bittiğinde de süre ölçülebilir ama stream olduğu için 
+                    # chunk bazlı VCA daha karmaşıktır. Şimdilik stream için loglama yapmıyoruz.
+                    # İleride: usage.recorded her chunk'ta gönderilebilir.
                     await cleanup_files(saved_files)
             
             return StreamingResponse(stream_with_cleanup(), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
             await cleanup_files(saved_files)
+            
+            # VCA Loglama (Clone Modu)
+            process_time = time.perf_counter() - start_time
+            char_count = len(text)
+            logger.info("usage.recorded", extra={
+                "event_type": "usage.recorded",
+                "resource_type": "tts_character",
+                "amount": char_count,
+                "model": settings.MODEL_NAME,
+                "duration_ms": round(process_time * 1000, 2),
+                "mode": "clone"
+            })
             
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"

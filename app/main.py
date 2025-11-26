@@ -9,8 +9,10 @@ from prometheus_fastapi_instrumentator import Instrumentator
 
 from app.core.engine import tts_engine
 from app.api.endpoints import router as api_router
+from app.core.logging_utils import setup_logging
 
-logging.basicConfig(level=logging.INFO)
+# 1. Logging Başlat (Governance Uyumluluğu)
+setup_logging()
 logger = logging.getLogger("XTTS-APP")
 
 UPLOAD_DIR = "/app/uploads"
