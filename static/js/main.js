@@ -1,37 +1,45 @@
+// ... (DOMContentLoaded ve Listenerlar aynı) ...
 let isPlaying = false;
 let abortController = null;
 
 document.addEventListener('DOMContentLoaded', () => {
     if(window.initUIEvents) window.initUIEvents();
     loadSpeakers();
-    
-    // Classic Player End Event
     const player = document.getElementById('classicPlayer');
     if(player) {
-        // Sadece Non-Stream modda, kullanıcı manuel durdurmadıysa resetle
         player.onended = () => {
             if(isPlaying && !document.getElementById('stream').checked) {
-                 // Stop çağır ama "user requested" bayrağını set etme ki doğal bitiş olsun
                  stopPlayback(false); 
             }
         };
     }
 });
 
-// --- NEW: DELETE HISTORY ---
+// --- NEW: TOPLU SİLME ---
+window.clearAllHistory = async function() {
+    if(!confirm('WARNING: This will delete ALL history, audio files, and reset caches.\n\nAre you sure?')) return;
+    try {
+        const res = await fetch('/api/history/all', { method: 'DELETE' });
+        const data = await res.json();
+        if(res.ok) {
+            alert(`Cleanup Complete.\nDeleted Files: ${data.files_deleted}`);
+            await loadHistoryData(); // Listeyi yenile (boş gelecek)
+        } else {
+            alert("Cleanup failed.");
+        }
+    } catch(e) { console.error(e); }
+}
+
 window.deleteHistory = async function(filename) {
-    if(!confirm('Delete this audio permanently?')) return;
+    if(!confirm('Delete this entry?')) return;
     try {
         const res = await fetch(`/api/history/${filename}`, { method: 'DELETE' });
         if(res.ok) {
-            // UI'dan satırı sil (yeniden yüklemeye gerek yok)
             const btn = document.querySelector(`button[onclick="deleteHistory('${filename}')"]`);
             if(btn) {
-                const row = btn.closest('.group'); // .group class'ı ana container'da var
+                const row = btn.closest('.group');
                 if(row) row.remove();
             }
-            // Yedek olarak listeyi yenile
-            // await loadHistoryData();
         } else {
             alert("Failed to delete.");
         }
@@ -41,18 +49,28 @@ window.deleteHistory = async function(filename) {
 window.loadHistoryData = async function() {
     const list = document.getElementById('historyList');
     if(!list) return;
+    
+    // --- TOPLU SİLME BUTONU EKLENDİ ---
+    const header = `
+    <div class="flex justify-between items-center mb-4 px-1">
+        <span class="text-[10px] text-gray-500 font-bold uppercase">Recent Generations</span>
+        <button onclick="clearAllHistory()" class="text-[9px] text-red-500 hover:text-red-400 bg-red-900/10 px-2 py-1 rounded border border-red-900/30 hover:bg-red-900/30 transition-all">CLEAR ALL</button>
+    </div>
+    `;
+    
     list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">Loading...</div>';
     try {
         const res = await fetch('/api/history');
         const data = await res.json();
-        list.innerHTML = '';
+        list.innerHTML = header; // Header'ı koy
+        
         if(data.length === 0) {
-            list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">No history yet...</div>';
+            list.innerHTML += '<div class="text-center text-[10px] text-gray-600 mt-10">No history yet...</div>';
             return;
         }
         data.forEach(item => {
             const el = document.createElement('div');
-            el.className = 'bg-[#18181b] p-3 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors group flex flex-col gap-2';
+            el.className = 'bg-[#18181b] p-3 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors group flex flex-col gap-2 mb-2';
             const timeStr = item.date ? item.date.split(' ')[1] : '';
             el.innerHTML = `
                 <div class="flex justify-between items-start">
@@ -84,18 +102,13 @@ window.loadHistoryData = async function() {
     } catch(e) { console.error(e); list.innerHTML = '<div class="text-center text-red-500 text-xs">Error loading history</div>'; }
 }
 
+// ... (playHistory, loadSpeakers, rescanSpeakers AYNI) ...
 window.playHistory = function(filename) {
-    // History'den çalarken Stream mantığını durdur
     if(window.resetAudioState) window.resetAudioState();
     const url = `/api/history/audio/${filename}`;
     const player = document.getElementById('classicPlayer');
-    if(player) { 
-        player.src = url; 
-        player.play(); 
-    }
+    if(player) { player.src = url; player.play(); }
 }
-
-// ... (loadSpeakers, rescanSpeakers AYNI) ...
 async function loadSpeakers() {
     try {
         const res = await fetch('/api/speakers');
@@ -122,37 +135,27 @@ async function loadSpeakers() {
         });
     } catch(e){ console.error("Speaker Load Error:", e); }
 }
-
 window.rescanSpeakers = async function() {
-    if(window.confirm("This will scan the disk for new speaker files on the server. Continue?")) {
+    if(window.confirm("Scan disk for new speakers?")) {
         try {
             const res = await fetch('/api/speakers/refresh', { method: 'POST' });
-            const report = await res.json();
-            let alertMessage = `${report.message}\n\nTotal Scanned: ${report.total_files_scanned}\nNewly Loaded: ${report.newly_loaded.length}\nFailed to Load: ${Object.keys(report.failed_to_load).length}\n\n`;
-            if(Object.keys(report.failed_to_load).length > 0) {
-                alertMessage += "Failed Files:\n";
-                for(const [file, error] of Object.entries(report.failed_to_load)) { alertMessage += `- ${file}: ${error}\n`; }
-            }
-            alert(alertMessage);
+            const d = await res.json();
+            alert(d.message);
             await loadSpeakers();
-        } catch (e) { alert("An error occurred while rescanning: " + e.message); }
+        } catch (e) { alert("Error: " + e.message); }
     }
 }
 
 async function handleGenerate() {
-    if (isPlaying) { 
-        stopPlayback(true); // User requested stop
-        return; 
-    }
+    if (isPlaying) { stopPlayback(true); return; }
 
     const textInput = document.getElementById('textInput');
     const text = textInput ? textInput.value.trim() : "";
-    if (!text) return alert("Please enter text to synthesize.");
+    if (!text) return alert("Please enter text.");
     
     let isStream = document.getElementById('stream').checked;
-    const isSSML = text.startsWith('<speak>');
-    if (isSSML && isStream) {
-        alert("SSML is not supported in Streaming mode. Request will be sent in Normal mode.");
+    if (text.startsWith('<speak>') && isStream) {
+        alert("SSML does not support streaming.");
         isStream = false;
     }
 
@@ -167,9 +170,6 @@ async function handleGenerate() {
         const modePanel = document.getElementById('panel-std');
         const mode = (modePanel && !modePanel.classList.contains('hidden')) ? 'standard' : 'clone';
         
-        const formatInput = document.getElementById('format');
-        const sampleRateInput = document.getElementById('sampleRate');
-        
         const params = {
             text: text, 
             language: document.getElementById('lang').value, 
@@ -179,8 +179,8 @@ async function handleGenerate() {
             top_p: document.getElementById('topp').value,
             repetition_penalty: document.getElementById('rep').value, 
             stream: isStream,
-            output_format: formatInput ? formatInput.value : 'wav',
-            sample_rate: sampleRateInput ? parseInt(sampleRateInput.value) : 24000
+            output_format: document.getElementById('format').value,
+            sample_rate: parseInt(document.getElementById('sampleRate').value)
         };
 
         let body, headers = {};
@@ -191,9 +191,12 @@ async function handleGenerate() {
             body = JSON.stringify({ ...params, speaker_idx: document.getElementById('speaker').value });
         } else {
             const fd = new FormData();
+            // --- FIX: Window Scope Check ---
             if (window.recordedBlob) {
+                // Kaydedilen sesi kullan
                 fd.append('files', window.recordedBlob, 'recording.webm');
             } else {
+                // Dosya yüklemeyi dene
                 const fileInput = document.getElementById('ref_audio');
                 const file = fileInput ? fileInput.files[0] : null;
                 if (!file) throw new Error("Please upload a file or record audio for cloning.");
@@ -214,9 +217,7 @@ async function handleGenerate() {
 
         if (params.stream) {
             const reader = response.body.getReader();
-            // Audio Core'u sıfırla ve yeni akışa hazırla
             if(window.resetAudioState) window.resetAudioState();
-            
             while (true) {
                 const { done, value } = await reader.read();
                 if (done) break;
@@ -228,55 +229,27 @@ async function handleGenerate() {
                 const float32 = convertInt16ToFloat32(new Int16Array(value.buffer, value.byteOffset, value.byteLength / 2));
                 await playChunk(float32, 24000);
             }
-            // Stream bitti, UI'ı normale döndür
             stopPlayback(false); 
         } else {
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const player = document.getElementById('classicPlayer');
-            if(player) { 
-                player.src = url; 
-                player.play(); 
-                // Non-stream bitişini player.onended yönetecek
-            }
+            if(player) { player.src = url; player.play(); }
             updateLatency(Math.round(performance.now() - startTime));
             setStatusText("PLAYING (NON-STREAM)");
             await loadHistoryData(); 
         }
 
     } catch (err) {
-        if (err.name === 'AbortError') {
-            // Kullanıcı durdurdu, sessizce çık
-            console.log("Fetch aborted by user.");
-        } else {
-            alert("Error: " + err.message); 
-            console.error(err); 
-            stopPlayback(false);
-        }
+        if (err.name !== 'AbortError') { alert("Error: " + err.message); console.error(err); stopPlayback(false); }
     }
 }
 
-// isUserInitiated: Eğer kullanıcı butona bastıysa true, şarkı bittiyse false
 function stopPlayback(isUserInitiated = true) {
-    if(isUserInitiated) console.log("Stopping playback (User Request)...");
-    
-    // 1. Ağ isteğini kes
-    if (abortController) {
-        abortController.abort();
-        abortController = null;
-    }
-    
-    // 2. Audio Core'u durdur (Stream seslerini keser)
+    if (abortController) { abortController.abort(); abortController = null; }
     if(window.resetAudioState) window.resetAudioState();
-    
-    // 3. Classic Player'ı durdur (Non-stream sesleri keser)
     const player = document.getElementById('classicPlayer');
-    if(player) {
-        player.pause();
-        // Eğer kullanıcı durdurduysa başa sar, yoksa olduğu yerde kalsın (gerçi UI resetleniyor)
-        if(isUserInitiated) player.currentTime = 0;
-    }
-
+    if(player) { player.pause(); if(isUserInitiated) player.currentTime = 0; }
     setPlayingState(false);
     const stat = document.getElementById('latencyStat');
     if(stat) stat.classList.add('hidden');

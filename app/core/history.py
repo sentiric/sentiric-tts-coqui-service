@@ -3,6 +3,7 @@ import json
 import os
 import uuid
 import time
+import glob
 from datetime import datetime
 from typing import List, Dict, Optional
 
@@ -20,10 +21,7 @@ class HistoryManager:
         os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
         conn = self._get_conn()
         cursor = conn.cursor()
-        
-        # WAL (Write-Ahead Logging) Modu: Yüksek eşzamanlılık için şart
         cursor.execute("PRAGMA journal_mode=WAL;")
-        
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS history (
                 id TEXT PRIMARY KEY,
@@ -40,9 +38,7 @@ class HistoryManager:
         conn.close()
 
     def add_entry(self, filename: str, text: str, speaker: str, mode: str):
-        """Thread-safe veri ekleme"""
         entry_id = str(uuid.uuid4())
-        # Text önizlemesi
         preview_text = text[:50] + "..." if len(text) > 50 else text
         date_str = datetime.now().strftime("%Y-%m-%d %H:%M")
         timestamp = time.time()
@@ -54,7 +50,7 @@ class HistoryManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (entry_id, filename, preview_text, speaker, mode, date_str, timestamp))
             
-            # Otomatik Temizlik: Son 50 kaydı tut, gerisini sil (Cleanup Policy)
+            # Otomatik Temizlik: Son 50 kaydı tut
             conn.execute("""
                 DELETE FROM history WHERE id NOT IN (
                     SELECT id FROM history ORDER BY timestamp DESC LIMIT 50
@@ -72,12 +68,29 @@ class HistoryManager:
             conn.close()
 
     def get_all(self) -> List[Dict]:
-        """Tüm geçmişi getir (Cachelenmiş gibi hızlı)"""
         conn = self._get_conn()
         try:
             cursor = conn.execute("SELECT * FROM history ORDER BY timestamp DESC LIMIT 50")
             rows = cursor.fetchall()
             return [dict(row) for row in rows]
+        finally:
+            conn.close()
+            
+    def delete_entry(self, filename: str):
+        """Tekil bir kaydı DB'den siler"""
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM history WHERE filename = ?", (filename,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    def clear_all(self):
+        """Tüm tabloyu temizler"""
+        conn = self._get_conn()
+        try:
+            conn.execute("DELETE FROM history")
+            conn.commit()
         finally:
             conn.close()
 
