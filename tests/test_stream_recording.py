@@ -1,5 +1,7 @@
 import requests
-import os
+import soundfile as sf
+import numpy as np
+import io
 from rich.console import Console
 
 console = Console()
@@ -10,14 +12,13 @@ def record_stream():
     console.print(f"[bold cyan]🎙️ Stream Kayıt Testi Başlıyor...[/bold cyan]")
     
     payload = {
-        "text": "Bu test, cızırtısız ve berrak bir ses için yapılıyor. Eğer bunu duyuyorsan backend tam cümleyi gönderiyor demektir.",
+        "text": "Bu ses kaydı, sistemin cızırtısız çalıştığını kanıtlamak için yapılmıştır. Lütfen dikkatlice dinleyin.",
         "language": "tr",
         "stream": True,
-        "speaker_idx": "Ana Florence",
-        # PCM yerine WAV header'lı stream alalım ki direkt çalınabilsin
-        # (Normalde stream raw gelir ama testimiz kolay olsun diye wav istiyoruz backend'den)
-        "output_format": "wav" 
+        "speaker_idx": "Ana Florence"
     }
+
+    raw_audio_buffer = io.BytesIO()
 
     try:
         with requests.post(f"{API_URL}/api/tts", json=payload, stream=True) as r:
@@ -25,18 +26,25 @@ def record_stream():
                 console.print(f"[red]❌ Hata: {r.status_code}[/red]")
                 return
 
-            with open(OUTPUT_FILE, "wb") as f:
-                console.print("   📥 Veri indiriliyor...", end="")
-                total_bytes = 0
-                for chunk in r.iter_content(chunk_size=None):
-                    if chunk:
-                        f.write(chunk)
-                        total_bytes += len(chunk)
-                console.print(f" [green]Bitti.[/green]")
-                console.print(f"   💾 Kaydedildi: {OUTPUT_FILE} ({total_bytes} bytes)")
-                
+            console.print("   📥 Veri indiriliyor...", end="")
+            for chunk in r.iter_content(chunk_size=None):
+                if chunk:
+                    raw_audio_buffer.write(chunk)
+            console.print(f" [green]Bitti.[/green]")
+
+        # RAW PCM verisini numpy array'e çevir
+        raw_data = raw_audio_buffer.getvalue()
+        # int16 formatında (XTTS standardı)
+        audio_np = np.frombuffer(raw_data, dtype=np.int16)
+
+        # SoundFile ile Header ekleyerek kaydet (24000Hz)
+        sf.write(OUTPUT_FILE, audio_np, 24000)
+        
+        console.print(f"   💾 Dosya oluşturuldu: [bold]{OUTPUT_FILE}[/bold]")
+        console.print(f"   ℹ️  Bu dosyayı bilgisayarına indirip dinle. Cızırtı var mı?")
+
     except Exception as e:
-        console.print(f"[red]❌ Bağlantı hatası: {e}[/red]")
+        console.print(f"[red]❌ Hata: {e}[/red]")
 
 if __name__ == "__main__":
     record_stream()

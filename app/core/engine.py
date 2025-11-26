@@ -204,13 +204,9 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # --- FIX 1: SILENCE PREAMBLE (HOPARLÖR UYANDIRMA) ---
-                # Tarayıcıya boş ses paketleri göndererek buffer'ı dolduruyoruz.
-                # JS tarafındaki "Cutoff" sorununu bu çözer.
-                silence_chunk = np.zeros(1024, dtype=np.int16).tobytes()
-                for _ in range(5): # 5 paket sessizlik
-                    yield silence_chunk
-
+                # --- FIX: SILENCE PREAMBLE KALDIRILDI ---
+                # Veri hizalamasını bozmaması için saf ses gönderiyoruz.
+                
                 gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                 chunks = self.model.inference_stream(
                     text, lang, gpt_cond_latent, speaker_embedding,
@@ -223,11 +219,10 @@ class TTSEngine:
                     if settings.DEVICE == "cuda": chunk = chunk.cpu()
                     wav_chunk_float = chunk.numpy()
                     
-                    # --- FIX 2: GAIN REMOVED (SES PATLAMASI FIX) ---
-                    # 1.5 katına çıkarmak yerine ham veriyi gönderiyoruz.
-                    # Eğer çok düşük gelirse 1.0 - 1.2 arası idealdir, 1.5 clipping yapar.
-                    
+                    # Clipping önleme
                     np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
+                    
+                    # Float32 -> Int16
                     wav_int16 = (wav_chunk_float * 32767).astype(np.int16)
                     yield wav_int16.tobytes()
                     

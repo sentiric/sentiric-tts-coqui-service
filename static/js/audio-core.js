@@ -3,12 +3,8 @@ const SOURCE_SAMPLE_RATE = 24000;
 let audioContext = null;
 let analyser = null;
 let nextStartTime = 0; 
-let mediaRecorder = null;
-let audioChunks = [];
-let sourceNodes = []; 
-
-// İndirme bitti mi bayrağı
 let isDownloadFinished = false;
+let sourceNodes = []; 
 
 function initAudioContext() {
     if (!audioContext) {
@@ -21,18 +17,14 @@ function initAudioContext() {
     if (audioContext.state === 'suspended') { audioContext.resume(); }
 }
 
-// Main.js'den çağrılacak: İndirme bitti, son parça kuyruğa eklendi.
 function notifyDownloadFinished() {
     isDownloadFinished = true;
     checkIfPlaybackFinished();
 }
 
 function checkIfPlaybackFinished() {
-    // Eğer indirme bittiyse VE çalınacak node kalmadıysa -> BİTTİ
     if (isDownloadFinished && sourceNodes.length === 0) {
-        if (window.onAudioPlaybackComplete) {
-            window.onAudioPlaybackComplete();
-        }
+        if (window.onAudioPlaybackComplete) window.onAudioPlaybackComplete();
     }
 }
 
@@ -48,10 +40,14 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
     source.connect(analyser);
     analyser.connect(audioContext.destination);
     
+    // --- ANTI-GLITCH LOGIC ---
     const currentTime = audioContext.currentTime;
-
+    
+    // 1. Eğer bu ilk paketse veya buffer boşaldıysa (Underrun)
     if (nextStartTime < currentTime) {
-        nextStartTime = currentTime;
+        // "Şimdi"ye eşitle ama çok küçük bir güvenlik payı bırak (0.02s)
+        // Bu, tarayıcının sesi işlemesi için gereken mini süredir.
+        nextStartTime = currentTime + 0.02;
     }
 
     source.start(nextStartTime);
@@ -60,30 +56,25 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
     source.onended = () => {
         const index = sourceNodes.indexOf(source);
         if (index > -1) sourceNodes.splice(index, 1);
-        
-        // Her parça bittiğinde kontrol et: Hepsi bitti mi?
         checkIfPlaybackFinished();
     };
 
+    // Bir sonraki parçanın başlama zamanı = Bu parçanın bitiş zamanı
     nextStartTime += buffer.duration;
 }
 
+// ... (resetAudioState, convertInt16ToFloat32 ve diğerleri AYNI) ...
 function resetAudioState() {
     window.isStopRequested = true;
-    isDownloadFinished = false; // Reset flag
-    
+    isDownloadFinished = false;
     sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
     sourceNodes = [];
     nextStartTime = 0;
     setTimeout(() => { window.isStopRequested = false; }, 200);
 }
-
-// ... (Geri kalan kodlar AYNI) ...
 function convertInt16ToFloat32(int16Data) {
     const float32 = new Float32Array(int16Data.length);
-    for (let i = 0; i < int16Data.length; i++) {
-        float32[i] = int16Data[i] >= 0 ? int16Data[i] / 32767 : int16Data[i] / 32768;
-    }
+    for (let i = 0; i < int16Data.length; i++) { float32[i] = int16Data[i] >= 0 ? int16Data[i] / 32767 : int16Data[i] / 32768; }
     return float32;
 }
 function initVisualizer() {
