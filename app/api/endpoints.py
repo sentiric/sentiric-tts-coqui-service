@@ -30,58 +30,98 @@ def cleanup_files(file_paths: List[str]):
         except Exception as e:
             logger.warning(f"Cleanup failed for {path}: {e}")
 
-# ... (Diğer endpointler aynı, sadece clone değişti) ...
 @router.get("/health")
-async def health_check(): return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
+async def health_check():
+    return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
+
 @router.get("/api/history")
-async def get_history(): return history_manager.get_all()
+async def get_history():
+    return history_manager.get_all()
+
 @router.get("/api/history/audio/{filename}")
 async def get_history_audio(filename: str):
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(HISTORY_DIR, safe_filename)
-    if os.path.exists(file_path): return FileResponse(file_path)
+    if os.path.exists(file_path):
+        return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="Audio not found")
+
 @router.delete("/api/history/all")
 async def delete_all_history():
     try:
         history_manager.clear_all()
+        files_deleted = 0
+        
+        # History klasörünü temizle
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
-                try: os.remove(f)
-                except: pass
-        for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")): try: os.remove(f); except: pass
-        for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")): try: os.remove(f); except: pass
-        return {"status": "cleared"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+                try:
+                    os.remove(f)
+                    files_deleted += 1
+                except:
+                    pass
+        
+        # Cache klasörünü temizle
+        for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
+            try:
+                os.remove(f)
+            except:
+                pass
+        
+        # Latents klasörünü temizle
+        for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
+            try:
+                os.remove(f)
+            except:
+                pass
+                
+        return {"status": "cleared", "files_deleted": files_deleted}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.delete("/api/history/{filename}")
 async def delete_history_entry(filename: str):
     try:
         safe_filename = os.path.basename(filename)
         file_path = os.path.join(HISTORY_DIR, safe_filename)
-        if os.path.exists(file_path): os.remove(file_path)
+        if os.path.exists(file_path):
+            os.remove(file_path)
         history_manager.delete_entry(safe_filename)
         return {"status": "deleted"}
-    except Exception as e: raise HTTPException(status_code=500, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 @router.get("/api/speakers")
 async def get_speakers():
-    return {"speakers": tts_engine.get_speakers(), "count": len(tts_engine.get_speakers())}
+    speakers = tts_engine.get_speakers()
+    return {"speakers": speakers, "count": len(speakers)}
+
 @router.post("/api/speakers/refresh")
 async def refresh_speakers_cache():
-    return {"status": "ok", "data": await asyncio.to_thread(tts_engine.refresh_speakers)}
+    report = await asyncio.to_thread(tts_engine.refresh_speakers)
+    return {"status": "ok", "data": report}
+
 @router.post("/api/tts")
 async def generate_speech(request: TTSRequest):
-    if not request.text or not request.text.strip(): raise HTTPException(status_code=422, detail="Text empty.")
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=422, detail="Text cannot be empty.")
     try:
         params = request.model_dump()
-        if request.stream: return StreamingResponse(tts_engine.synthesize_stream(params), media_type="application/octet-stream")
+        if request.stream:
+            return StreamingResponse(tts_engine.synthesize_stream(params), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             ext = "wav"
             if request.output_format == "mp3": ext = "mp3"
             elif request.output_format == "opus": ext = "opus"
+            
             filename = f"tts_{uuid.uuid4()}.{ext}"
-            with open(os.path.join(HISTORY_DIR, filename), "wb") as f: f.write(audio_bytes)
+            filepath = os.path.join(HISTORY_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(audio_bytes)
+            
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
+            
             media_type = "audio/wav"
             if ext == "mp3": media_type = "audio/mpeg"
             elif ext == "opus": media_type = "audio/ogg"
@@ -103,14 +143,16 @@ async def generate_speech_clone(
     stream: bool = Form(False),
     output_format: str = Form("wav")
 ):
-    if not text or not text.strip(): raise HTTPException(status_code=422, detail="Text empty.")
+    if not text or not text.strip():
+        raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
     saved_files = []
     try:
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
-            with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+            with open(file_path, "wb") as buffer:
+                shutil.copyfileobj(file.file, buffer)
             saved_files.append(file_path)
             
         params = {
@@ -125,16 +167,19 @@ async def generate_speech_clone(
                     for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
                         yield chunk
                 finally:
-                    cleanup_files(saved_files) # Stream bitince sil
+                    cleanup_files(saved_files)
             
             return StreamingResponse(stream_with_cleanup(), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
-            cleanup_files(saved_files) # İşlem bitince sil
+            cleanup_files(saved_files)
             
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"
-            with open(os.path.join(HISTORY_DIR, filename), "wb") as f: f.write(audio_bytes)
+            filepath = os.path.join(HISTORY_DIR, filename)
+            with open(filepath, "wb") as f:
+                f.write(audio_bytes)
+            
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
             
             media_type = "audio/wav"
