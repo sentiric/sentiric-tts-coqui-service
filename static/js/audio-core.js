@@ -6,7 +6,8 @@ let nextStartTime = 0;
 let isDownloadFinished = false;
 let sourceNodes = []; 
 
-function initAudioContext() {
+// Context'i başlatır ve HAZIR olana kadar bekler
+async function ensureAudioContextReady() {
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
@@ -14,7 +15,11 @@ function initAudioContext() {
         analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    if (audioContext.state === 'suspended') { audioContext.resume(); }
+    
+    if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+    }
+    return audioContext;
 }
 
 function notifyDownloadFinished() {
@@ -29,25 +34,26 @@ function checkIfPlaybackFinished() {
 }
 
 async function playChunk(float32Array, serverSampleRate = 24000) {
-    initAudioContext();
     if (window.isStopRequested) return;
 
-    const buffer = audioContext.createBuffer(1, float32Array.length, serverSampleRate);
+    // 1. Context'in uyanmasını bekle (Kritik Cutoff Fix)
+    const ctx = await ensureAudioContextReady();
+
+    const buffer = ctx.createBuffer(1, float32Array.length, serverSampleRate);
     buffer.getChannelData(0).set(float32Array);
     
-    const source = audioContext.createBufferSource();
+    const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(analyser);
-    analyser.connect(audioContext.destination);
+    analyser.connect(ctx.destination);
     
-    // --- ANTI-GLITCH LOGIC ---
-    const currentTime = audioContext.currentTime;
-    
-    // 1. Eğer bu ilk paketse veya buffer boşaldıysa (Underrun)
-    if (nextStartTime < currentTime) {
-        // "Şimdi"ye eşitle ama çok küçük bir güvenlik payı bırak (0.02s)
-        // Bu, tarayıcının sesi işlemesi için gereken mini süredir.
-        nextStartTime = currentTime + 0.02;
+    const currentTime = ctx.currentTime;
+
+    // 2. Zamanlama Mantığı (Resetlendiğinde nextStartTime 0 olur)
+    // Eğer ilk paketse veya gecikme olduysa:
+    if (nextStartTime === 0 || nextStartTime < currentTime) {
+        // "Şimdi"den 0.1 sn sonraya zamanla (Güvenli Bölge)
+        nextStartTime = currentTime + 0.1;
     }
 
     source.start(nextStartTime);
@@ -59,19 +65,29 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
         checkIfPlaybackFinished();
     };
 
-    // Bir sonraki parçanın başlama zamanı = Bu parçanın bitiş zamanı
     nextStartTime += buffer.duration;
 }
 
-// ... (resetAudioState, convertInt16ToFloat32 ve diğerleri AYNI) ...
 function resetAudioState() {
     window.isStopRequested = true;
     isDownloadFinished = false;
-    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
+    
+    // Geleceğe zamanlanmış tüm sesleri iptal et
+    sourceNodes.forEach(node => {
+        try { 
+            node.stop(); 
+            node.disconnect(); 
+        } catch(e) {}
+    });
     sourceNodes = [];
+    
+    // Zamanlayıcıyı SIFIRLA (Çok önemli)
     nextStartTime = 0;
-    setTimeout(() => { window.isStopRequested = false; }, 200);
+    
+    setTimeout(() => { window.isStopRequested = false; }, 100);
 }
+
+// ... (Geri kalan yardımcı fonksiyonlar aynı) ...
 function convertInt16ToFloat32(int16Data) {
     const float32 = new Float32Array(int16Data.length);
     for (let i = 0; i < int16Data.length; i++) { float32[i] = int16Data[i] >= 0 ? int16Data[i] / 32767 : int16Data[i] / 32768; }
