@@ -7,5 +7,7 @@ class Settings(BaseModel):
     DEVICE: str = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"
     COQUI_TOS_AGREED: str = "1"
     LOW_RESOURCE_MODE: bool = os.getenv("LOW_RESOURCE_MODE", "True").lower() == "true"
+    # Governance Uyumluluğu için DEBUG modu
+    DEBUG: bool = os.getenv("DEBUG", "False").lower() == "true"
 
 settings = Settings()
