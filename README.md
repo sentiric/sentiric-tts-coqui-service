@@ -1,5 +1,7 @@
 # Sentiric XTTS v2 Microservice
 
+[![Docker Build & Publish](https://github.com/sentiric/sentiric-tts-coqui-service/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/sentiric/sentiric-tts-coqui-service/actions/workflows/docker-publish.yml)
+
 Production-ready, GPU-accelerated Text-to-Speech microservice based on Coqui XTTS v2. Supports multilingual synthesis, voice cloning, SSML control, and streaming capabilities via REST API and Gradio UI.
 
 ## Features

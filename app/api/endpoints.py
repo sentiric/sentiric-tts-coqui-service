@@ -7,13 +7,15 @@ import shutil
 import glob
 import uuid
 import logging
-import time 
+import time
 
 from app.core.engine import tts_engine
 from app.core.config import settings
 from app.api.schemas import TTSRequest
 from app.core.history import history_manager
+from app.core.logging_utils import setup_logging
 
+# Logger'ı yapılandır
 logger = logging.getLogger("API")
 router = APIRouter()
 
@@ -22,11 +24,10 @@ HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
 async def cleanup_files(file_paths: List[str]):
-    """Geçici dosyaları asenkron olarak siler (Event Loop'u bloklamaz)"""
+    """Geçici dosyaları asenkron olarak siler"""
     for path in file_paths:
         try:
             if os.path.exists(path):
-                # os.remove blocking I/O'dur, thread pool'a gönderiyoruz
                 await asyncio.to_thread(os.remove, path)
                 logger.info(f"Cleaned up: {path}")
         except Exception as e:
@@ -57,8 +58,6 @@ async def delete_all_history():
     try:
         history_manager.clear_all()
         files_deleted = 0
-        
-        # Dosya silme işlemlerini thread pool'a yayıyoruz
         async def remove_safe(path):
             try:
                 await asyncio.to_thread(os.remove, path)
@@ -70,16 +69,13 @@ async def delete_all_history():
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
                 tasks.append(remove_safe(f))
-        
         for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
             tasks.append(remove_safe(f))
-            
         for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
             tasks.append(remove_safe(f))
             
         results = await asyncio.gather(*tasks)
-        files_deleted = sum(results)
-                
+        files_deleted = sum(results)     
         return {"status": "cleared", "files_deleted": files_deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -107,11 +103,11 @@ async def refresh_speakers_cache():
     return {"status": "ok", "data": report}
 
 @router.post("/api/tts")
-async def generate_speech(request: TTSRequest):
+async def generate_speech(request: TTSRequest, response: Response):
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
-    start_time = time.perf_counter() # VCA Ölçümü Başlat
+    start_time = time.perf_counter()
     
     try:
         params = request.model_dump()
@@ -120,19 +116,31 @@ async def generate_speech(request: TTSRequest):
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             
-            # VCA Metrik Hesaplama
+            # --- VCA METRICS CALCULATION ---
             process_time = time.perf_counter() - start_time
             char_count = len(request.text)
             
-            # Governance VCA Standardı Loglama
+            # RTF Hesabı:
+            # 24000 Hz, 16-bit (2 bytes), 1 Kanal = 48000 bytes/sec
+            audio_duration_sec = len(audio_bytes) / 48000
+            rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
+
+            # Governance Log
             logger.info("usage.recorded", extra={
                 "event_type": "usage.recorded",
                 "resource_type": "tts_character",
                 "amount": char_count,
                 "model": settings.MODEL_NAME,
                 "duration_ms": round(process_time * 1000, 2),
+                "rtf": round(rtf, 4),
                 "mode": "standard"
             })
+
+            # HTTP Headers for UI HUD (X-VCA)
+            response.headers["X-VCA-Chars"] = str(char_count)
+            response.headers["X-VCA-Time"] =f"{process_time:.3f}"
+            response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
+            # -------------------------------
 
             ext = "wav"
             if request.output_format == "mp3": ext = "mp3"
@@ -141,7 +149,6 @@ async def generate_speech(request: TTSRequest):
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
             
-            # Non-blocking write
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
@@ -156,6 +163,7 @@ async def generate_speech(request: TTSRequest):
 
 @router.post("/api/tts/clone")
 async def generate_speech_clone(
+    response: Response,
     text: str = Form(...),
     language: str = Form("en"),
     files: List[UploadFile] = File(...),
@@ -170,19 +178,15 @@ async def generate_speech_clone(
     if not text or not text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
-    start_time = time.perf_counter() # VCA Başlangıç
+    start_time = time.perf_counter()
     saved_files = []
     try:
-        # Dosyaları diske kaydetme (CPU bound işlem değil ama I/O)
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
-            
-            # Dosya yazma işlemini thread'e atıyoruz
             def save_upload(src_file, dst_path):
                 with open(dst_path, "wb") as buffer:
                     shutil.copyfileobj(src_file, buffer)
-            
             await asyncio.to_thread(save_upload, file.file, file_path)
             saved_files.append(file_path)
             
@@ -195,36 +199,40 @@ async def generate_speech_clone(
         if stream:
             async def stream_with_cleanup():
                 try:
-                    # Generator blocking değil, engine zaten içinde chunk üretiyor
                     for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
                         yield chunk
                 finally:
-                    # Stream bittiğinde de süre ölçülebilir ama stream olduğu için 
-                    # chunk bazlı VCA daha karmaşıktır. Şimdilik stream için loglama yapmıyoruz.
-                    # İleride: usage.recorded her chunk'ta gönderilebilir.
                     await cleanup_files(saved_files)
-            
             return StreamingResponse(stream_with_cleanup(), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
             await cleanup_files(saved_files)
             
-            # VCA Loglama (Clone Modu)
+            # --- VCA METRICS ---
             process_time = time.perf_counter() - start_time
             char_count = len(text)
+            # Clone RTF hesabı (yaklaşık)
+            audio_duration_sec = len(audio_bytes) / 48000
+            rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
+
             logger.info("usage.recorded", extra={
                 "event_type": "usage.recorded",
                 "resource_type": "tts_character",
                 "amount": char_count,
                 "model": settings.MODEL_NAME,
                 "duration_ms": round(process_time * 1000, 2),
+                "rtf": round(rtf, 4),
                 "mode": "clone"
             })
+
+            response.headers["X-VCA-Chars"] = str(char_count)
+            response.headers["X-VCA-Time"] = f"{process_time:.3f}"
+            response.headers["X-VCA-RTF"] = f"{rtf:.4f}"
+            # -------------------
             
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
-            
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
