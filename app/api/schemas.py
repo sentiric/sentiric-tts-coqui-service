@@ -48,5 +48,6 @@ class TTSRequest(BaseModel):
     
     # Pro Features
     stream: bool = Field(False, description="Eğer True ise, ses parça parça (chunk) gelir.")
-    output_format: str = Field("wav", pattern="^(wav|mp3)$", description="Ses dosya formatı")
+    # FIX: Regex genişletildi (wav, mp3, opus, pcm)
+    output_format: str = Field("wav", pattern="^(wav|mp3|opus|pcm)$", description="Ses dosya formatı")
     split_sentences: bool = Field(True, description="Uzun metinleri cümlelere böl (Daha doğal duraklama)")

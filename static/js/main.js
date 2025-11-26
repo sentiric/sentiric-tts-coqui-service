@@ -4,7 +4,24 @@ let abortController = null;
 document.addEventListener('DOMContentLoaded', () => {
     if(window.initUIEvents) window.initUIEvents();
     loadSpeakers();
+    
+    // --- FIX: CLASSIC PLAYER EVENT LISTENER ---
+    // Ses bittiğinde UI'ı otomatik "Ready" moduna döndür
+    const player = document.getElementById('classicPlayer');
+    if(player) {
+        player.onended = () => {
+            console.log("Audio playback ended (event).");
+            if(isPlaying) stopPlayback();
+        };
+        // Hata durumunda da durmalı
+        player.onerror = () => {
+            console.error("Audio playback error.");
+            if(isPlaying) stopPlayback();
+        };
+    }
 });
+
+// ... (loadHistoryData, playHistory, loadSpeakers, rescanSpeakers AYNI KALACAK) ...
 
 window.loadHistoryData = async function() {
     const list = document.getElementById('historyList');
@@ -99,11 +116,7 @@ window.rescanSpeakers = async function() {
 }
 
 async function handleGenerate() {
-    // STOP Butonuna basıldıysa
-    if (isPlaying) { 
-        stopPlayback(); 
-        return; 
-    }
+    if (isPlaying) { stopPlayback(); return; }
 
     const textInput = document.getElementById('textInput');
     const text = textInput ? textInput.value.trim() : "";
@@ -120,7 +133,6 @@ async function handleGenerate() {
     const startTime = performance.now();
     let firstChunk = false;
 
-    // Audio Context Warmup
     if(window.initAudioContext) window.initAudioContext();
 
     try {
@@ -186,9 +198,10 @@ async function handleGenerate() {
                     setStatusText("STREAMING");
                 }
                 const float32 = convertInt16ToFloat32(new Int16Array(value.buffer, value.byteOffset, value.byteLength / 2));
-                // Stream her zaman 24k gelir
                 await playChunk(float32, 24000);
             }
+            // Stream bittiğinde UI'ı resetle
+            stopPlayback(); 
         } else {
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
@@ -196,6 +209,8 @@ async function handleGenerate() {
             if(player) { 
                 player.src = url; 
                 player.play(); 
+                // Buradaki state resetlemesini KALDIRIYORUZ.
+                // Resetleme işini yukarıdaki 'player.onended' yapacak.
             }
             updateLatency(Math.round(performance.now() - startTime));
             setStatusText("PLAYING (NON-STREAM)");
@@ -206,27 +221,26 @@ async function handleGenerate() {
         if (err.name !== 'AbortError') { 
             alert("Error: " + err.message); 
             console.error(err); 
+            stopPlayback(); // Hatada resetle
         }
-    } finally {
-        const finalDelay = document.getElementById('stream').checked && !isSSML ? 1500 : 100;
-        // Eğer kullanıcı elle durdurmadıysa, otomatik normale dön
-        if(isPlaying) setTimeout(() => setPlayingState(false), finalDelay);
-    }
+    } 
+    // FINALLY BLOĞUNU KALDIRIYORUZ (Non-Stream için)
+    // Stream ve Hata durumları kendi içinde stopPlayback çağırıyor.
+    // Non-stream ise 'onended' eventini bekliyor.
 }
 
 function stopPlayback() {
-    console.log("Stopping playback...");
+    console.log("Stopping playback and resetting UI...");
+    
     if (abortController) {
         abortController.abort();
         abortController = null;
     }
     
-    // Audio Core'daki oynatmayı durdur
     if(window.resetAudioState) window.resetAudioState();
     
-    // Klasik player'ı durdur
     const player = document.getElementById('classicPlayer');
-    if(player) {
+    if(player && !player.paused) {
         player.pause();
         player.currentTime = 0;
     }

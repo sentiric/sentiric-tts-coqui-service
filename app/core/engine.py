@@ -79,13 +79,7 @@ class TTSEngine:
                 torch.cuda.empty_cache()
 
     def _normalize_text(self, text: str) -> str:
-        """
-        Basit metin temizliği ve normalizasyon.
-        XTTS sayıları bazen okuyamaz, bu yüzden basit önlemler.
-        """
-        # Çoklu boşlukları temizle
         text = re.sub(r'\s+', ' ', text).strip()
-        # Garip tırnak işaretlerini düzelt
         text = text.replace("’", "'").replace("“", '"').replace("”", '"')
         return text
 
@@ -114,7 +108,6 @@ class TTSEngine:
             def process_element(element, current_params):
                 if element.text and element.text.strip():
                     segments.append({'type': 'text', 'content': element.text.strip(), 'params': current_params.copy()})
-                
                 for child in element:
                     child_params = current_params.copy()
                     if child.tag == 'break':
@@ -129,7 +122,6 @@ class TTSEngine:
                     elif child.tag == 'emphasis':
                         level = child.get('level', 'moderate')
                         child_params = self._apply_emphasis(child_params, level)
-                    
                     process_element(child, child_params)
                     if child.tail and child.tail.strip():
                         segments.append({'type': 'text', 'content': child.tail.strip(), 'params': current_params.copy()})
@@ -146,9 +138,8 @@ class TTSEngine:
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         text = self._normalize_text(params.get("text", ""))
         if not text: return b""
-
-        is_ssml = ("<speak>" in text) or ("<break" in text) or ("<prosody" in text)
         
+        is_ssml = ("<speak>" in text) or ("<break" in text) or ("<prosody" in text)
         cache_key = None
         if not is_ssml and not speaker_wavs:
             cache_key = self._generate_cache_key(params)
@@ -194,15 +185,12 @@ class TTSEngine:
             finally:
                 self._cleanup_memory()
 
-        # Resampling ve Format Dönüşümünü tamamen _process_audio'ya (FFmpeg) bırakıyoruz.
-        # Bu yüzden burada raw 24k wav kaydedip gönderiyoruz.
         wav_tensor = full_wav.unsqueeze(0)
         buffer = io.BytesIO()
         torchaudio.save(buffer, wav_tensor, 24000, format="wav")
         buffer.seek(0)
         wav_data = buffer.read()
         
-        # FFmpeg ile işle (Resampling + Format + Loudnorm)
         final_audio = self._process_audio(wav_data, params.get("output_format", "wav"), params.get("sample_rate", 24000))
         
         if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
@@ -224,10 +212,6 @@ class TTSEngine:
                     enable_text_splitting=True
                 )
 
-                # Stream modunda FFmpeg borusu kurmak zordur (latency artar). 
-                # Bu yüzden stream için 'sample_rate' parametresini yok sayıp DAİMA 24kHz ham veri yolluyoruz.
-                # İstemci (JS) tarafı gerekirse downsample yapabilir ama en temiz ses 24k'dır.
-                
                 for chunk in chunks:
                     if settings.DEVICE == "cuda": chunk = chunk.cpu()
                     wav_chunk_float = chunk.numpy()
@@ -242,7 +226,6 @@ class TTSEngine:
             finally:
                 self._cleanup_memory()
 
-    # ... (refresh_speakers, get_speakers, _get_latents, _generate_cache_key, _check_cache, _save_cache AYNI) ...
     def refresh_speakers(self):
         report = {"success": [], "failed": {}, "total_scanned": 0}
         if os.path.exists(self.SPEAKERS_DIR):
@@ -267,8 +250,7 @@ class TTSEngine:
         
         if os.path.exists(latent_file):
             try:
-                with open(latent_file, 'r') as f:
-                    data = json.load(f)
+                with open(latent_file, 'r') as f: data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
                 if settings.DEVICE == "cuda":
@@ -319,30 +301,24 @@ class TTSEngine:
     
     def _process_audio(self, wav_bytes: bytes, format: str, sample_rate: int) -> bytes:
         try:
-            # 1. FFmpeg Komutunu Oluştur
-            # Input her zaman 24000Hz WAV (XTTS default)
             cmd = ['ffmpeg', '-y', '-f', 'wav', '-i', 'pipe:0']
             
-            # Loudness Normalization (Her zaman iyi kalitede çıktı için)
-            # Eğer sample rate 8k ise loudness norm bazen hata verebilir, ama genelde çalışır.
-            cmd += ['-af', 'loudnorm=I=-16:TP=-1.5:LRA=11']
+            # --- FIX: CUTOFF SORUNU İÇİN SERVER-SIDE SESSİZLİK ---
+            # 'adelay' filtresi ile her kanala 250ms gecikme ekliyoruz.
+            # 'loudnorm' ile ses seviyesini sabitliyoruz.
+            filter_chain = 'adelay=250|250,loudnorm=I=-16:TP=-1.5:LRA=11'
+            cmd += ['-af', filter_chain]
             
-            # Format Ayarları
             if format == "mp3":
                 cmd += ['-f', 'mp3', '-acodec', 'libmp3lame', '-b:a', '192k']
             elif format == "opus":
-                # OPUS için .ogg container kullanımı en güvenlisidir
                 cmd += ['-f', 'ogg', '-acodec', 'libopus', '-b:a', '64k', '-vbr', 'on']
             elif format == "pcm":
                 cmd += ['-f', 's16le', '-acodec', 'pcm_s16le']
             else:
                 cmd += ['-f', 'wav', '-acodec', 'pcm_s16le']
             
-            # Resampling (FFmpeg'in en iyi yaptığı iş)
-            # -ar flag'i output sample rate'i belirler
             cmd += ['-ar', str(sample_rate)]
-            
-            # Output pipe
             cmd += ['pipe:1']
             
             process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
