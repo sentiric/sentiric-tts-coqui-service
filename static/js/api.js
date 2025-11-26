@@ -42,13 +42,12 @@ class API {
             throw new Error(errorText);
         }
 
-        // VCA Headers - Governance Compliance
         this._dispatchVCA(response.headers);
-        
         return response;
     }
 
     static async generateClone(formData, signal) {
+        // ... (Aynı kalıyor) ...
         const response = await fetch('/api/tts/clone', {
             method: 'POST',
             body: formData,
@@ -60,9 +59,7 @@ class API {
             throw new Error(errorText);
         }
 
-        // VCA Headers - Governance Compliance
         this._dispatchVCA(response.headers);
-
         return response;
     }
 
@@ -72,11 +69,16 @@ class API {
         const time = headers.get("X-VCA-Time");
         const rtf = headers.get("X-VCA-RTF");
 
+        // DEBUG LOG (Konsolu kontrol et)
+        console.log("📊 VCA Headers:", { charCount, time, rtf });
+
         if (time) {
             const event = new CustomEvent('vca-update', { 
                 detail: { chars: charCount, time: time, rtf: rtf } 
             });
             document.dispatchEvent(event);
+        } else {
+            console.warn("⚠️ VCA Headers not found! Check Backend CORS settings.");
         }
     }
 }

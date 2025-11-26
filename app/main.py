@@ -11,7 +11,6 @@ from app.core.engine import tts_engine
 from app.api.endpoints import router as api_router
 from app.core.logging_utils import setup_logging
 
-# 1. Logging Başlat (Governance Uyumluluğu)
 setup_logging()
 logger = logging.getLogger("XTTS-APP")
 
@@ -33,11 +32,13 @@ app = FastAPI(title="Sentiric XTTS Pro", lifespan=lifespan)
 
 Instrumentator().instrument(app).expose(app)
 
+# KRİTİK DÜZELTME: expose_headers eklendi
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-VCA-Chars", "X-VCA-Time", "X-VCA-RTF"] 
 )
 
 app.include_router(api_router)
