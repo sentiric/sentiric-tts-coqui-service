@@ -1,4 +1,3 @@
-// Sunucudan gelen verinin hızı (Sabit)
 const SOURCE_SAMPLE_RATE = 24000;
 
 let audioContext = null;
@@ -8,9 +7,10 @@ let mediaRecorder = null;
 let audioChunks = [];
 let sourceNodes = []; 
 
+// İndirme bitti mi bayrağı
+let isDownloadFinished = false;
+
 function initAudioContext() {
-    // FIX: sampleRate parametresini sildik. 
-    // Tarayıcı donanımın doğal hızını (44.1k veya 48k) kullansın.
     if (!audioContext) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)();
         analyser = audioContext.createAnalyser();
@@ -21,12 +21,25 @@ function initAudioContext() {
     if (audioContext.state === 'suspended') { audioContext.resume(); }
 }
 
+// Main.js'den çağrılacak: İndirme bitti, son parça kuyruğa eklendi.
+function notifyDownloadFinished() {
+    isDownloadFinished = true;
+    checkIfPlaybackFinished();
+}
+
+function checkIfPlaybackFinished() {
+    // Eğer indirme bittiyse VE çalınacak node kalmadıysa -> BİTTİ
+    if (isDownloadFinished && sourceNodes.length === 0) {
+        if (window.onAudioPlaybackComplete) {
+            window.onAudioPlaybackComplete();
+        }
+    }
+}
+
 async function playChunk(float32Array, serverSampleRate = 24000) {
     initAudioContext();
     if (window.isStopRequested) return;
 
-    // FIX: Buffer oluştururken 3. parametre olarak verinin hızını (24000) veriyoruz.
-    // AudioContext (örn: 48000) bunu otomatik ve pürüzsüzce dönüştürerek çalar.
     const buffer = audioContext.createBuffer(1, float32Array.length, serverSampleRate);
     buffer.getChannelData(0).set(float32Array);
     
@@ -37,11 +50,7 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
     
     const currentTime = audioContext.currentTime;
 
-    // --- ZAMANLAMA (SCHEDULING) ---
-    // Eğer zamanlayıcı geride kaldıysa (takılma olduysa)
     if (nextStartTime < currentTime) {
-        // Cızırtıyı önlemek için üst üste bindirme (overlap) yapma,
-        // Sadece "şimdi"ye çek.
         nextStartTime = currentTime;
     }
 
@@ -51,11 +60,25 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
     source.onended = () => {
         const index = sourceNodes.indexOf(source);
         if (index > -1) sourceNodes.splice(index, 1);
+        
+        // Her parça bittiğinde kontrol et: Hepsi bitti mi?
+        checkIfPlaybackFinished();
     };
 
     nextStartTime += buffer.duration;
 }
 
+function resetAudioState() {
+    window.isStopRequested = true;
+    isDownloadFinished = false; // Reset flag
+    
+    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
+    sourceNodes = [];
+    nextStartTime = 0;
+    setTimeout(() => { window.isStopRequested = false; }, 200);
+}
+
+// ... (Geri kalan kodlar AYNI) ...
 function convertInt16ToFloat32(int16Data) {
     const float32 = new Float32Array(int16Data.length);
     for (let i = 0; i < int16Data.length; i++) {
@@ -63,16 +86,6 @@ function convertInt16ToFloat32(int16Data) {
     }
     return float32;
 }
-
-function resetAudioState() {
-    window.isStopRequested = true;
-    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
-    sourceNodes = [];
-    nextStartTime = 0;
-    setTimeout(() => { window.isStopRequested = false; }, 200);
-}
-
-// ... (Visualizer ve Recorder aynı kalıyor) ...
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
@@ -99,7 +112,6 @@ function initVisualizer() {
     }
     draw();
 }
-
 async function startRecording() {
     if (!navigator.mediaDevices) return alert("Mic denied");
     try {

@@ -44,6 +44,13 @@ API'nin hata yönetimi ve veri bütünlüğünü test eder.
     *   Ses üretme, geçmişte bulma ve silme (CRUD Döngüsü).
     *   Bozuk SSML tagleri gönderme (Sistemin çökmemesi beklenir).
 
+
+---
+
+python3 tests/test_stream_recording.py
+
+---
+
 ## Örnek Rapor
 
 ```text
