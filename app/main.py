@@ -46,8 +46,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ... (Health, Get History, Audio, Speakers Endpoints - DEĞİŞİKLİK YOK) ...
-# (Bu kısmı token tasarrufu için kısalttım, mevcut kodun aynısı kalacak)
 @app.get("/health")
 async def health_check():
     return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
@@ -72,37 +70,25 @@ async def refresh_speakers_cache():
     report = await asyncio.to_thread(tts_engine.refresh_speakers)
     return {"status": "ok", "message": "Refreshed", "data": report}
 
-# --- YENİ SİLME ENDPOINTLERİ ---
-
 @app.delete("/api/history/all")
 async def delete_all_history():
     """NUCLEAR OPTION: Her şeyi siler (History, Cache, Latents)"""
     try:
-        # 1. DB Temizle
         history_manager.clear_all()
-        
-        # 2. History Dosyalarını Sil (.wav, .mp3 vs)
         files = glob.glob(os.path.join(HISTORY_DIR, "*"))
         deleted_count = 0
         for f in files:
-            if os.path.basename(f) != "history.db": # DB dosyasının kendisini silme
+            if os.path.basename(f) != "history.db":
                 try: os.remove(f); deleted_count += 1
                 except: pass
-                
-        # 3. Cache Temizle
         cache_files = glob.glob(os.path.join(CACHE_DIR, "*.bin"))
         for f in cache_files:
             try: os.remove(f)
             except: pass
-            
-        # 4. Latents Temizle (Opsiyonel: Eğer speaker latents de silinsin istersen)
-        # Latents silmek, bir sonraki üretimde 1-2 sn gecikme yaratır (tekrar hesaplar)
-        # Ama temizlik için iyidir.
         latent_files = glob.glob(os.path.join(CACHE_DIR, "latents", "*.json"))
         for f in latent_files:
             try: os.remove(f)
             except: pass
-
         return {"status": "cleared", "files_deleted": deleted_count, "cache_cleared": True}
     except Exception as e:
         logger.error(f"Clear all error: {e}")
@@ -113,26 +99,19 @@ async def delete_history_entry(filename: str):
     try:
         safe_filename = os.path.basename(filename)
         file_path = os.path.join(HISTORY_DIR, safe_filename)
-        
-        # Dosyayı sil
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            
-        # DB'den sil
+        if os.path.exists(file_path): os.remove(file_path)
         history_manager.delete_entry(safe_filename)
-        
         return {"status": "deleted", "filename": safe_filename}
     except Exception as e:
         logger.error(f"Delete error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# ... (TTS ve Clone Endpoints - DEĞİŞİKLİK YOK, Sadece importları yukarıda yaptık) ...
-# Mevcut app.post("/api/tts") ve app.post("/api/tts/clone") kodları aynen kalmalı.
-# Burada tekrar yazmıyorum, engine.py ile uyumlu.
-
 @app.post("/api/tts")
 async def generate_speech(request: TTSRequest):
-    # (Mevcut kod aynen)
+    # --- FIX: Boş Metin Kontrolü ---
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=422, detail="Text cannot be empty or whitespace only.")
+
     try:
         params = request.model_dump()
         if request.stream:
@@ -170,7 +149,10 @@ async def generate_speech_clone(
     stream: bool = Form(False),
     output_format: str = Form("wav")
 ):
-    # (Mevcut kod aynen)
+    # --- FIX: Boş Metin Kontrolü ---
+    if not text or not text.strip():
+        raise HTTPException(status_code=422, detail="Text cannot be empty or whitespace only.")
+
     saved_files = []
     try:
         for file in files:

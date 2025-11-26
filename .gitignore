@@ -37,3 +37,4 @@ output.wav
 history
 cache
 .venv_test
+tests/output
