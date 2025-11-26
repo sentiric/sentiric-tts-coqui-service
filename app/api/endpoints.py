@@ -1,8 +1,7 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response
 from fastapi.responses import StreamingResponse, FileResponse
-from typing import List
-import os
 import asyncio
+import os
 import shutil
 import glob
 import uuid
@@ -25,7 +24,8 @@ async def health_check():
     return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
 
 @router.get("/api/history")
-async def get_history(): return history_manager.get_all()
+async def get_history(): 
+    return history_manager.get_all()
 
 @router.get("/api/history/audio/{filename}")
 async def get_history_audio(filename: str):
@@ -38,17 +38,15 @@ async def get_history_audio(filename: str):
 async def delete_all_history():
     try:
         history_manager.clear_all()
+        files_deleted = 0
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
-                try: os.remove(f)
-                except: pass
+                try: os.remove(f); files_deleted += 1; except: pass
         for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
-            try: os.remove(f)
-            except: pass
+            try: os.remove(f); except: pass
         for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
-            try: os.remove(f)
-            except: pass
-        return {"status": "cleared"}
+            try: os.remove(f); except: pass
+        return {"status": "cleared", "files_deleted": files_deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -86,9 +84,11 @@ async def generate_speech(request: TTSRequest):
             ext = "wav"
             if request.output_format == "mp3": ext = "mp3"
             elif request.output_format == "opus": ext = "opus"
+            
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
             with open(filepath, "wb") as f: f.write(audio_bytes)
+            
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
             media_type = "audio/wav"
