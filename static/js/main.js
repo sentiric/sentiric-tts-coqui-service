@@ -4,7 +4,7 @@ const State = {
     abortController: null
 };
 
-// --- CONTROLLERS (HTML'den çağrılan fonksiyonlar) ---
+// --- CONTROLLERS ---
 const Controllers = {
     async loadSpeakers() {
         try {
@@ -14,6 +14,7 @@ const Controllers = {
     },
 
     async loadHistory() {
+        // UI helper'ı çağır
         const list = document.getElementById('historyList');
         if(list) list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">Loading...</div>';
         try {
@@ -45,8 +46,7 @@ const Controllers = {
         try {
             const success = await API.deleteHistory(filename);
             if(success) {
-                // UI'dan siliyoruz, tüm listeyi çekmeye gerek yok (Optimistic Update)
-                const btn = document.querySelector(`button[onclick="Controllers.deleteHistory('${filename}')"]`);
+                const btn = document.querySelector(`button[onclick="deleteHistory('${filename}')"]`);
                 if(btn) {
                     const row = btn.closest('.group');
                     if(row) row.remove();
@@ -110,7 +110,6 @@ const Controllers = {
         try {
             State.abortController = new AbortController();
             
-            // Parametreleri topla
             const modePanel = document.getElementById('panel-std');
             const mode = (modePanel && !modePanel.classList.contains('hidden')) ? 'standard' : 'clone';
             
@@ -127,7 +126,6 @@ const Controllers = {
                 sample_rate: parseInt(document.getElementById('sampleRate').value)
             };
 
-            // İsteği yap
             let response;
             if (mode === 'standard') {
                 params.speaker_idx = document.getElementById('speaker').value;
@@ -145,7 +143,6 @@ const Controllers = {
                 response = await API.generateClone(fd, State.abortController.signal);
             }
 
-            // Yanıtı İşle
             if (isStream) {
                 const reader = response.body.getReader();
                 while (true) {
@@ -181,15 +178,67 @@ const Controllers = {
     }
 };
 
-// --- EVENT LISTENERS & INIT ---
-// Global scope'a açıyoruz ki HTML onclick'ler erişebilsin
-window.Controllers = Controllers;
-window.handleGenerate = () => Controllers.handleGenerate(); // Legacy support
-// setMode, toggleHistory gibi basit UI fonksiyonları ui.js içinde veya html içinde kalabilir
-// veya buraya taşınabilir. Şimdilik temel butonları bağlıyoruz.
+// --- LEGACY BRIDGE (HTML Uyumluluğu) ---
+// HTML'deki onclick="toggleHistory()" gibi çağrıları karşılamak için
+window.toggleHistory = function() {
+    const d = document.getElementById('historyDrawer');
+    const o = document.getElementById('historyOverlay');
+    const isOpen = !d.classList.contains('translate-x-full');
+    
+    if(isOpen) {
+        d.classList.add('translate-x-full');
+        o.classList.remove('opacity-100');
+        setTimeout(() => o.classList.add('hidden'), 300);
+    } else {
+        d.classList.remove('translate-x-full');
+        o.classList.remove('hidden');
+        void o.offsetWidth;
+        o.classList.add('opacity-100');
+        Controllers.loadHistory();
+    }
+};
 
+window.setMode = function(m) {
+    const active = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md bg-blue-600 text-white shadow-lg transition-all';
+    const inactive = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md text-gray-500 hover:text-white transition-all';
+    const btnStd = document.getElementById('btn-std');
+    const btnCln = document.getElementById('btn-cln');
+    const pnlStd = document.getElementById('panel-std');
+    const pnlCln = document.getElementById('panel-cln');
+
+    if(m === 'standard') {
+        btnStd.className = active; btnCln.className = inactive;
+        pnlStd.classList.remove('hidden'); pnlCln.classList.add('hidden');
+    } else {
+        btnCln.className = active; btnStd.className = inactive;
+        pnlCln.classList.remove('hidden'); pnlStd.classList.add('hidden');
+    }
+};
+
+window.toggleAdvanced = function() {
+    const panel = document.getElementById('advanced-panel');
+    const icon = document.getElementById('adv-icon');
+    if (panel.classList.contains('accordion-open')) {
+        panel.classList.remove('accordion-open');
+        icon.style.transform = 'rotate(0deg)';
+    } else {
+        panel.classList.add('accordion-open');
+        icon.style.transform = 'rotate(180deg)';
+    }
+};
+
+// Global Access
+window.Controllers = Controllers;
+window.handleGenerate = () => Controllers.handleGenerate();
+window.loadSpeakers = () => Controllers.loadSpeakers();
+window.rescanSpeakers = () => Controllers.rescanSpeakers();
+window.clearAllHistory = () => Controllers.clearAllHistory();
+window.deleteHistory = (f) => Controllers.deleteHistory(f);
+window.playHistory = (f) => Controllers.playHistory(f);
+
+// --- INIT ---
 document.addEventListener('DOMContentLoaded', () => {
-    if(window.initUIEvents) window.initUIEvents(); // Slider eventleri
+    if(window.initUIEvents) window.initUIEvents();
     Controllers.loadSpeakers();
     
     const player = document.getElementById('classicPlayer');
