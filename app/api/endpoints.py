@@ -30,6 +30,11 @@ def cleanup_files(file_paths: List[str]):
         except Exception as e:
             logger.warning(f"Cleanup failed for {path}: {e}")
 
+
+@router.get("/favicon.ico", include_in_schema=False)
+async def favicon():
+    return Response(content=b"", media_type="image/x-icon")
+    
 @router.get("/health")
 async def health_check():
     return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
