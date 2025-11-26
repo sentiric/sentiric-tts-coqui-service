@@ -1,0 +1,24 @@
+# --- Core Frameworks (GPU Compatible Versions) ---
+# Not: Torch Dockerfile içinde özel URL ile kurulsa da buraya referans için yazılır
+torch==2.1.2
+torchaudio==2.1.2
+numpy==1.22.0
+
+# --- ML & TTS ---
+transformers==4.36.2
+TTS==0.22.0
+scipy>=1.11.0
+langid
+
+# --- API & Server ---
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+pydantic>=2.6.0
+
+# --- Monitoring ---
+prometheus-fastapi-instrumentator>=6.1.0
+
+# --- Utilities ---
+python-dotenv
+ffmpeg-python

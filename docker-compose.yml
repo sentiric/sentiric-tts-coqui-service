@@ -1,0 +1,50 @@
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric.cloud}"
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET}
+          gateway: ${NETWORK_GATEWAY}
+          
+volumes:
+  # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
+  # --------------------------------------------------     
+  tts-coqui-models:
+  tts-coqui-speakers:
+  tts-coqui-history:
+  tts-coqui-cache:    
+
+services:
+  tts-coqui-service:
+    image: ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
+    build:
+      context: ../sentiric-tts-coqui-service
+    env_file:
+      - .env
+    volumes:
+      - tts-coqui-models:/root/.local/share/tts
+      - ../sentiric-assets/docs/audio/speakers/en:/app/speakers
+      - tts-coqui-history:/app/history
+      - tts-coqui-cache:/app/cache
+    ports:
+      - "${TTS_COQUI_SERVICE_HTTP_PORT:-14030}:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
+      - "${TTS_COQUI_SERVICE_GRPC_PORT:-14031}:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
+      - "${TTS_COQUI_SERVICE_METRICS_PORT:-14032}:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"
+
+    networks:
+      sentiric-net:
+        ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
+    restart: always              
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:14030/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
