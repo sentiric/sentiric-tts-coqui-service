@@ -5,23 +5,38 @@ document.addEventListener('DOMContentLoaded', () => {
     if(window.initUIEvents) window.initUIEvents();
     loadSpeakers();
     
-    // --- FIX: CLASSIC PLAYER EVENT LISTENER ---
-    // Ses bittiğinde UI'ı otomatik "Ready" moduna döndür
+    // Classic Player End Event
     const player = document.getElementById('classicPlayer');
     if(player) {
+        // Sadece Non-Stream modda, kullanıcı manuel durdurmadıysa resetle
         player.onended = () => {
-            console.log("Audio playback ended (event).");
-            if(isPlaying) stopPlayback();
-        };
-        // Hata durumunda da durmalı
-        player.onerror = () => {
-            console.error("Audio playback error.");
-            if(isPlaying) stopPlayback();
+            if(isPlaying && !document.getElementById('stream').checked) {
+                 // Stop çağır ama "user requested" bayrağını set etme ki doğal bitiş olsun
+                 stopPlayback(false); 
+            }
         };
     }
 });
 
-// ... (loadHistoryData, playHistory, loadSpeakers, rescanSpeakers AYNI KALACAK) ...
+// --- NEW: DELETE HISTORY ---
+window.deleteHistory = async function(filename) {
+    if(!confirm('Delete this audio permanently?')) return;
+    try {
+        const res = await fetch(`/api/history/${filename}`, { method: 'DELETE' });
+        if(res.ok) {
+            // UI'dan satırı sil (yeniden yüklemeye gerek yok)
+            const btn = document.querySelector(`button[onclick="deleteHistory('${filename}')"]`);
+            if(btn) {
+                const row = btn.closest('.group'); // .group class'ı ana container'da var
+                if(row) row.remove();
+            }
+            // Yedek olarak listeyi yenile
+            // await loadHistoryData();
+        } else {
+            alert("Failed to delete.");
+        }
+    } catch(e) { console.error(e); }
+}
 
 window.loadHistoryData = async function() {
     const list = document.getElementById('historyList');
@@ -42,7 +57,12 @@ window.loadHistoryData = async function() {
             el.innerHTML = `
                 <div class="flex justify-between items-start">
                     <span class="text-[9px] font-bold text-blue-400 bg-blue-900/20 px-1.5 py-0.5 rounded uppercase">${item.mode || 'TTS'}</span>
-                    <span class="text-[9px] text-gray-600 font-mono">${timeStr}</span>
+                    <div class="flex items-center gap-2">
+                         <span class="text-[9px] text-gray-600 font-mono">${timeStr}</span>
+                         <button onclick="deleteHistory('${item.filename}')" class="text-gray-600 hover:text-red-500 transition-colors" title="Delete">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                         </button>
+                    </div>
                 </div>
                 <p class="text-xs text-gray-300 line-clamp-2 italic border-l-2 border-gray-700 pl-2">"${item.text}"</p>
                 <div class="flex justify-between items-center pt-1 border-t border-white/5 mt-1">
@@ -65,11 +85,17 @@ window.loadHistoryData = async function() {
 }
 
 window.playHistory = function(filename) {
+    // History'den çalarken Stream mantığını durdur
+    if(window.resetAudioState) window.resetAudioState();
     const url = `/api/history/audio/${filename}`;
     const player = document.getElementById('classicPlayer');
-    if(player) { player.src = url; player.play(); }
+    if(player) { 
+        player.src = url; 
+        player.play(); 
+    }
 }
 
+// ... (loadSpeakers, rescanSpeakers AYNI) ...
 async function loadSpeakers() {
     try {
         const res = await fetch('/api/speakers');
@@ -85,11 +111,9 @@ async function loadSpeakers() {
         });
         Object.keys(groups).forEach(k => {
             if(groups[k].length) {
-                const g = document.createElement('optgroup'); 
-                g.label = k;
+                const g = document.createElement('optgroup'); g.label = k;
                 groups[k].forEach(s => {
-                    const o = document.createElement('option'); 
-                    o.value = s;
+                    const o = document.createElement('option'); o.value = s;
                     o.innerText = s.replace('[FILE] ','').replace('F_','').replace('M_','').replace('.wav','').replace(/_/g,' ');
                     g.appendChild(o);
                 });
@@ -116,7 +140,10 @@ window.rescanSpeakers = async function() {
 }
 
 async function handleGenerate() {
-    if (isPlaying) { stopPlayback(); return; }
+    if (isPlaying) { 
+        stopPlayback(true); // User requested stop
+        return; 
+    }
 
     const textInput = document.getElementById('textInput');
     const text = textInput ? textInput.value.trim() : "";
@@ -187,6 +214,7 @@ async function handleGenerate() {
 
         if (params.stream) {
             const reader = response.body.getReader();
+            // Audio Core'u sıfırla ve yeni akışa hazırla
             if(window.resetAudioState) window.resetAudioState();
             
             while (true) {
@@ -200,8 +228,8 @@ async function handleGenerate() {
                 const float32 = convertInt16ToFloat32(new Int16Array(value.buffer, value.byteOffset, value.byteLength / 2));
                 await playChunk(float32, 24000);
             }
-            // Stream bittiğinde UI'ı resetle
-            stopPlayback(); 
+            // Stream bitti, UI'ı normale döndür
+            stopPlayback(false); 
         } else {
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
@@ -209,8 +237,7 @@ async function handleGenerate() {
             if(player) { 
                 player.src = url; 
                 player.play(); 
-                // Buradaki state resetlemesini KALDIRIYORUZ.
-                // Resetleme işini yukarıdaki 'player.onended' yapacak.
+                // Non-stream bitişini player.onended yönetecek
             }
             updateLatency(Math.round(performance.now() - startTime));
             setStatusText("PLAYING (NON-STREAM)");
@@ -218,35 +245,41 @@ async function handleGenerate() {
         }
 
     } catch (err) {
-        if (err.name !== 'AbortError') { 
+        if (err.name === 'AbortError') {
+            // Kullanıcı durdurdu, sessizce çık
+            console.log("Fetch aborted by user.");
+        } else {
             alert("Error: " + err.message); 
             console.error(err); 
-            stopPlayback(); // Hatada resetle
+            stopPlayback(false);
         }
-    } 
-    // FINALLY BLOĞUNU KALDIRIYORUZ (Non-Stream için)
-    // Stream ve Hata durumları kendi içinde stopPlayback çağırıyor.
-    // Non-stream ise 'onended' eventini bekliyor.
+    }
 }
 
-function stopPlayback() {
-    console.log("Stopping playback and resetting UI...");
+// isUserInitiated: Eğer kullanıcı butona bastıysa true, şarkı bittiyse false
+function stopPlayback(isUserInitiated = true) {
+    if(isUserInitiated) console.log("Stopping playback (User Request)...");
     
+    // 1. Ağ isteğini kes
     if (abortController) {
         abortController.abort();
         abortController = null;
     }
     
+    // 2. Audio Core'u durdur (Stream seslerini keser)
     if(window.resetAudioState) window.resetAudioState();
     
+    // 3. Classic Player'ı durdur (Non-stream sesleri keser)
     const player = document.getElementById('classicPlayer');
-    if(player && !player.paused) {
+    if(player) {
         player.pause();
-        player.currentTime = 0;
+        // Eğer kullanıcı durdurduysa başa sar, yoksa olduğu yerde kalsın (gerçi UI resetleniyor)
+        if(isUserInitiated) player.currentTime = 0;
     }
 
     setPlayingState(false);
     const stat = document.getElementById('latencyStat');
     if(stat) stat.classList.add('hidden');
     setStatusText("READY");
+    isPlaying = false;
 }

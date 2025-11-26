@@ -5,10 +5,12 @@ let nextStartTime = 0;
 let mediaRecorder = null;
 let audioChunks = [];
 let recordedBlob = null;
-// Audio oynatma kuyruğunu tutmak için
 let sourceNodes = []; 
 
-const INITIAL_BUFFER_DELAY = 0.5; 
+// CUTOFF FIX: Bu değeri 0.5'ten 0.8'e çektik. 
+// İlk parça gelince tarayıcıya "Şu an çalma, 0.8 saniye sonra çal" diyoruz.
+// Bu sırada tarayıcı uyanıyor ve veri birikiyor.
+const INITIAL_BUFFER_DELAY = 0.8; 
 
 function initAudioContext(sampleRate = 24000) {
     if (!audioContext || audioContext.sampleRate !== sampleRate) {
@@ -19,7 +21,6 @@ function initAudioContext(sampleRate = 24000) {
         analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    // Kritik: Kullanıcı etkileşimi ile resume edilmeli
     if (audioContext.state === 'suspended') {
         audioContext.resume();
     }
@@ -28,16 +29,10 @@ function initAudioContext(sampleRate = 24000) {
 async function playChunk(float32Array, sampleRate = 24000) {
     initAudioContext(sampleRate);
     
-    // CUTOFF FIX: Eğer bu ilk parça ise, boş bir sessizlik çal
-    // Bu, hoparlörleri "uyandırır"
-    if (nextStartTime === 0) {
-        const dummyBuffer = audioContext.createBuffer(1, 240, sampleRate); // 10ms sessizlik
-        const dummySource = audioContext.createBufferSource();
-        dummySource.buffer = dummyBuffer;
-        dummySource.connect(audioContext.destination);
-        dummySource.start(audioContext.currentTime);
-    }
+    // STOP FIX: Eğer kullanıcı stop'a bastıysa yeni gelen paketleri reddet
+    if (window.isStopRequested) return;
 
+    // Buffer oluştur
     const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate);
     buffer.getChannelData(0).set(float32Array);
     
@@ -48,17 +43,23 @@ async function playChunk(float32Array, sampleRate = 24000) {
     
     const currentTime = audioContext.currentTime;
 
+    // Zamanlama Mantığı (Scheduling)
     if (nextStartTime < currentTime) {
-        nextStartTime = currentTime + 0.1; 
+        // Eğer geri kaldıysak, hemen sıfırla ve buffer ekle
+        nextStartTime = currentTime + 0.1;
     }
-    if (nextStartTime === 0) {
+    
+    // İLK BAŞLANGIÇ KRİTİK NOKTA
+    // nextStartTime eğer çok yakınsa (0 ise), ileriye at.
+    // sourceNodes.length === 0 kontrolü, bunun "yeni" bir akış olduğunu garanti eder.
+    if (sourceNodes.length === 0) {
+        // İlk paket için eksta güvenli boşluk
         nextStartTime = currentTime + INITIAL_BUFFER_DELAY;
     }
     
     source.start(nextStartTime);
-    sourceNodes.push(source); // Node'u sakla ki durdurabilelim
+    sourceNodes.push(source);
     
-    // Temizlik: Çaldıktan sonra listeden çıkar
     source.onended = () => {
         const index = sourceNodes.indexOf(source);
         if (index > -1) sourceNodes.splice(index, 1);
@@ -76,15 +77,27 @@ function convertInt16ToFloat32(int16Data) {
 }
 
 function resetAudioState() {
-    // Tüm çalan sesleri anında durdur
+    // STOP FIX: Agresif Durdurma
+    window.isStopRequested = true; // Flag set et
+    
+    // 1. Web Audio API düğümlerini durdur
     sourceNodes.forEach(node => {
-        try { node.stop(); } catch(e) {}
+        try { node.stop(); node.disconnect(); } catch(e) {}
     });
     sourceNodes = [];
-    nextStartTime = 0; 
-    // AudioContext'i sıfırlamak yerine zamanlayıcıyı sıfırla
+    nextStartTime = 0;
+    
+    // AudioContext'i askıya al (CPU tasarrufu ve reset için iyi)
+    if (audioContext && audioContext.state === 'running') {
+        // Hemen suspend etmek yerine biraz bekle, yoksa "pop" sesi çıkabilir
+        // Ama acil durdurma için suspend iyidir.
+        // audioContext.suspend(); 
+    }
+    
+    setTimeout(() => { window.isStopRequested = false; }, 500);
 }
 
+// ... Visualizer ve Recorder kodları aynı ...
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
