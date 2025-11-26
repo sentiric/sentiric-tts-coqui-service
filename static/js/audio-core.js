@@ -1,16 +1,13 @@
 const SAMPLE_RATE = 24000;
 let audioContext = null;
 let analyser = null;
-let nextStartTime = 0;
+let nextStartTime = 0; // Sesin ne zaman çalacağını takip eden zamanlayıcı
 let mediaRecorder = null;
 let audioChunks = [];
-// recordedBlob'u buradan kaldırıyoruz veya sadece lokal referans tutuyoruz
-// Esas veri window.recordedBlob olacak
-
 let sourceNodes = []; 
-const INITIAL_BUFFER_DELAY = 0.8; 
 
-// ... (initAudioContext, playChunk, convertInt16ToFloat32, resetAudioState, initVisualizer AYNI KALACAK) ...
+// İlk başlangıç gecikmesi (Tarayıcının uyanması için)
+const INITIAL_BUFFER_DELAY = 0.5; 
 
 function initAudioContext(sampleRate = 24000) {
     if (!audioContext || audioContext.sampleRate !== sampleRate) {
@@ -21,27 +18,49 @@ function initAudioContext(sampleRate = 24000) {
         analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    if (audioContext.state === 'suspended') { audioContext.resume(); }
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
 }
 
 async function playChunk(float32Array, sampleRate = 24000) {
     initAudioContext(sampleRate);
+    
     if (window.isStopRequested) return;
+
     const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate);
     buffer.getChannelData(0).set(float32Array);
+    
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
     source.connect(analyser);
     analyser.connect(audioContext.destination);
+    
     const currentTime = audioContext.currentTime;
-    if (nextStartTime < currentTime) { nextStartTime = currentTime + 0.1; }
-    if (sourceNodes.length === 0) { nextStartTime = currentTime + INITIAL_BUFFER_DELAY; }
+
+    // --- STREAM FIX ZAMANLAMA MANTIĞI ---
+    
+    // Durum 1: İlk Paket (Yepyeni bir akış başlıyor)
+    if (nextStartTime === 0) {
+        // Tarayıcıyı uyandırmak için güvenli bir boşluk bırak
+        nextStartTime = currentTime + INITIAL_BUFFER_DELAY;
+    } 
+    // Durum 2: Buffer Underrun (İnternet yavaşladı, ses yetişmedi, zaman geride kaldı)
+    else if (nextStartTime < currentTime) {
+        // Geriye dönük çalamayız, o yüzden "şu an"a atla ve minik bir boşluk bırak
+        nextStartTime = currentTime + 0.1;
+    }
+    // Durum 3: Normal Akış (nextStartTime gelecekte bir yer, sorun yok, ucuna ekle)
+    
     source.start(nextStartTime);
     sourceNodes.push(source);
+    
     source.onended = () => {
         const index = sourceNodes.indexOf(source);
         if (index > -1) sourceNodes.splice(index, 1);
     };
+
+    // Bir sonraki parçanın başlama zamanını güncelle
     nextStartTime += buffer.duration;
 }
 
@@ -55,12 +74,21 @@ function convertInt16ToFloat32(int16Data) {
 
 function resetAudioState() {
     window.isStopRequested = true;
-    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
+    
+    // Çalan her şeyi durdur
+    sourceNodes.forEach(node => {
+        try { node.stop(); node.disconnect(); } catch(e) {}
+    });
     sourceNodes = [];
+    
+    // Zamanlayıcıyı kesinlikle sıfırla
     nextStartTime = 0;
-    setTimeout(() => { window.isStopRequested = false; }, 500);
+    
+    // Stop flag'ini kısa süre sonra kaldır
+    setTimeout(() => { window.isStopRequested = false; }, 200);
 }
 
+// ... (initVisualizer, startRecording, stopRecording, clearRecordingData AYNI KALACAK) ...
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
@@ -88,7 +116,6 @@ function initVisualizer() {
     draw();
 }
 
-// --- FIX BURADA BAŞLIYOR ---
 async function startRecording() {
     if (!navigator.mediaDevices) return alert("Mic denied");
     try {
@@ -97,7 +124,6 @@ async function startRecording() {
         audioChunks = [];
         mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
         mediaRecorder.onstop = () => {
-            // FIX: Window nesnesine ata ki main.js görebilsin
             window.recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
             if(window.onRecordingComplete) window.onRecordingComplete();
         };
@@ -112,6 +138,6 @@ function stopRecording() {
     }
 }
 function clearRecordingData() { 
-    window.recordedBlob = null; // Global'i sıfırla
+    window.recordedBlob = null; 
     audioChunks = []; 
 }
