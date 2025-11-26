@@ -8,5 +8,8 @@ class Settings(BaseModel):
     DEVICE: str = "cuda" if os.getenv("CUDA_VISIBLE_DEVICES") else "cpu"
     # TOS Auto Accept
     COQUI_TOS_AGREED: str = "1"
+    
+    # Low Resource Mode: Agresif bellek temizliği yapar (Biraz yavaşlatır ama çökmesini engeller)
+    LOW_RESOURCE_MODE: bool = os.getenv("LOW_RESOURCE_MODE", "True").lower() == "true"
 
 settings = Settings()

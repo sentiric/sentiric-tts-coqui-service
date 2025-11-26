@@ -1,5 +1,4 @@
 # --- Core Frameworks (GPU Compatible Versions) ---
-# Not: Torch Dockerfile içinde özel URL ile kurulsa da buraya referans için yazılır
 torch==2.1.2
 torchaudio==2.1.2
 numpy==1.22.0
@@ -22,3 +21,5 @@ prometheus-fastapi-instrumentator>=6.1.0
 # --- Utilities ---
 python-dotenv
 ffmpeg-python
+# Güvenli XML parse işlemleri için (Opsiyonel ama önerilir, kodda native fallback var)
+defusedxml>=0.7.1
