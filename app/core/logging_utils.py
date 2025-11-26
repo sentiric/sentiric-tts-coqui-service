@@ -1,14 +1,19 @@
 import logging
 import sys
+from datetime import datetime
 from pythonjsonlogger import jsonlogger
 from app.core.config import settings
 
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
     def add_fields(self, log_record, record, message_dict):
         super(CustomJsonFormatter, self).add_fields(log_record, record, message_dict)
+        
+        # FIX: record.asctime her zaman mevcut değildir.
+        # ISO 8601 formatında timestamp ekliyoruz.
         if not log_record.get('timestamp'):
-            # Governance Standardı: ISO 8601 Time Format
-            log_record['timestamp'] = record.asctime
+            now = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+            log_record['timestamp'] = now
+            
         if log_record.get('level'):
             log_record['level'] = log_record['level'].upper()
         else:
@@ -20,7 +25,7 @@ class CustomJsonFormatter(jsonlogger.JsonFormatter):
 def setup_logging():
     logger = logging.getLogger()
     
-    # Mevcut handlerları temizle (Uvicorn'un defaultlarını ezmek için)
+    # Mevcut handlerları temizle
     if logger.handlers:
         logger.handlers = []
 
@@ -34,17 +39,15 @@ def setup_logging():
         )
     else:
         # Üretim Ortamı: JSON (Governance Standardı: OBS-2.1)
-        # timestamp, level, name, message zorunlu alanlar
+        # timestamp alanını add_fields içinde eklediğimiz için burada formata koymuyoruz
         formatter = CustomJsonFormatter(
-            '%(timestamp)s %(level)s %(name)s %(message)s'
+            '%(level)s %(name)s %(message)s'
         )
 
     handler.setFormatter(formatter)
     logger.addHandler(handler)
     
-    # Log Seviyesi
     logger.setLevel(logging.INFO)
     
-    # Harici kütüphanelerin gürültüsünü azalt
     logging.getLogger("multipart").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
