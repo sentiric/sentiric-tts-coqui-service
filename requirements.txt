@@ -21,5 +21,4 @@ prometheus-fastapi-instrumentator>=6.1.0
 # --- Utilities ---
 python-dotenv
 ffmpeg-python
-# Güvenli XML parse işlemleri için (Opsiyonel ama önerilir, kodda native fallback var)
 defusedxml>=0.7.1

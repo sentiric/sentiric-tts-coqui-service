@@ -5,10 +5,9 @@ let nextStartTime = 0;
 let mediaRecorder = null;
 let audioChunks = [];
 let recordedBlob = null;
+// Audio oynatma kuyruğunu tutmak için
+let sourceNodes = []; 
 
-// --- TUNING PARAMETERS ---
-// Kötü ağlar için tampon süresini artırdık (0.1 -> 0.5s)
-// Bu, sesi 0.5sn geç başlatır ama kesilmeyi önler.
 const INITIAL_BUFFER_DELAY = 0.5; 
 
 function initAudioContext(sampleRate = 24000) {
@@ -17,15 +16,28 @@ function initAudioContext(sampleRate = 24000) {
         audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: sampleRate });
         analyser = audioContext.createAnalyser();
         analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.8; // Görselleştiriciyi yumuşat
+        analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    if (audioContext.state === 'suspended') audioContext.resume();
+    // Kritik: Kullanıcı etkileşimi ile resume edilmeli
+    if (audioContext.state === 'suspended') {
+        audioContext.resume();
+    }
 }
 
 async function playChunk(float32Array, sampleRate = 24000) {
     initAudioContext(sampleRate);
     
+    // CUTOFF FIX: Eğer bu ilk parça ise, boş bir sessizlik çal
+    // Bu, hoparlörleri "uyandırır"
+    if (nextStartTime === 0) {
+        const dummyBuffer = audioContext.createBuffer(1, 240, sampleRate); // 10ms sessizlik
+        const dummySource = audioContext.createBufferSource();
+        dummySource.buffer = dummyBuffer;
+        dummySource.connect(audioContext.destination);
+        dummySource.start(audioContext.currentTime);
+    }
+
     const buffer = audioContext.createBuffer(1, float32Array.length, sampleRate);
     buffer.getChannelData(0).set(float32Array);
     
@@ -36,19 +48,22 @@ async function playChunk(float32Array, sampleRate = 24000) {
     
     const currentTime = audioContext.currentTime;
 
-    // --- AKILLI SENKRONİZASYON ---
     if (nextStartTime < currentTime) {
-        // Eğer tampon boşaldıysa (internet yavaşladıysa),
-        // hemen çalma, biraz bekle ki yeni paketler biriksin.
         nextStartTime = currentTime + 0.1; 
     }
-    
-    // İlk başlangıçta güvenli bir boşluk bırak
     if (nextStartTime === 0) {
         nextStartTime = currentTime + INITIAL_BUFFER_DELAY;
     }
     
     source.start(nextStartTime);
+    sourceNodes.push(source); // Node'u sakla ki durdurabilelim
+    
+    // Temizlik: Çaldıktan sonra listeden çıkar
+    source.onended = () => {
+        const index = sourceNodes.indexOf(source);
+        if (index > -1) sourceNodes.splice(index, 1);
+    };
+
     nextStartTime += buffer.duration;
 }
 
@@ -61,14 +76,14 @@ function convertInt16ToFloat32(int16Data) {
 }
 
 function resetAudioState() {
-    // AudioContext'i kapatmıyoruz, sadece zamanlayıcıyı sıfırlıyoruz
-    // Kapatıp açmak tarayıcıda "patlama" sesine neden olabilir.
+    // Tüm çalan sesleri anında durdur
+    sourceNodes.forEach(node => {
+        try { node.stop(); } catch(e) {}
+    });
+    sourceNodes = [];
     nextStartTime = 0; 
+    // AudioContext'i sıfırlamak yerine zamanlayıcıyı sıfırla
 }
-
-// ... (Diğer visualizer ve mic kodları aynı kalacak) ...
-// (Tam dosya içeriğini bozmamak için sadece değişen kritik yerleri vurguladım)
-// Aşağısı görselleştirici ve kayıt kodlarının aynısıdır:
 
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');

@@ -9,25 +9,19 @@ document.addEventListener('DOMContentLoaded', () => {
 window.loadHistoryData = async function() {
     const list = document.getElementById('historyList');
     if(!list) return;
-    
     list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">Loading...</div>';
-    
     try {
         const res = await fetch('/api/history');
         const data = await res.json();
-        
         list.innerHTML = '';
         if(data.length === 0) {
             list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">No history yet...</div>';
             return;
         }
-
         data.forEach(item => {
             const el = document.createElement('div');
             el.className = 'bg-[#18181b] p-3 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors group flex flex-col gap-2';
-            
             const timeStr = item.date ? item.date.split(' ')[1] : '';
-            
             el.innerHTML = `
                 <div class="flex justify-between items-start">
                     <span class="text-[9px] font-bold text-blue-400 bg-blue-900/20 px-1.5 py-0.5 rounded uppercase">${item.mode || 'TTS'}</span>
@@ -50,20 +44,13 @@ window.loadHistoryData = async function() {
             `;
             list.appendChild(el);
         });
-
-    } catch(e) { 
-        console.error(e); 
-        list.innerHTML = '<div class="text-center text-red-500 text-xs">Error loading history</div>'; 
-    }
+    } catch(e) { console.error(e); list.innerHTML = '<div class="text-center text-red-500 text-xs">Error loading history</div>'; }
 }
 
 window.playHistory = function(filename) {
     const url = `/api/history/audio/${filename}`;
     const player = document.getElementById('classicPlayer');
-    if(player) {
-        player.src = url;
-        player.play();
-    }
+    if(player) { player.src = url; player.play(); }
 }
 
 async function loadSpeakers() {
@@ -72,16 +59,13 @@ async function loadSpeakers() {
         const data = await res.json();
         const sel = document.getElementById('speaker');
         if(!sel) return;
-
         sel.innerHTML = '';
-        
         const groups = { 'Female': [], 'Male': [], 'Other': [] };
         data.speakers.forEach(s => {
             if(s.includes('F_')) groups['Female'].push(s);
             else if(s.includes('M_')) groups['Male'].push(s);
             else groups['Other'].push(s);
         });
-
         Object.keys(groups).forEach(k => {
             if(groups[k].length) {
                 const g = document.createElement('optgroup'); 
@@ -103,46 +87,41 @@ window.rescanSpeakers = async function() {
         try {
             const res = await fetch('/api/speakers/refresh', { method: 'POST' });
             const report = await res.json();
-
-            let alertMessage = `${report.message}\n\n`;
-            alertMessage += `Total Scanned: ${report.total_files_scanned}\n`;
-            alertMessage += `Newly Loaded: ${report.newly_loaded.length}\n`;
-            alertMessage += `Failed to Load: ${Object.keys(report.failed_to_load).length}\n\n`;
-
+            let alertMessage = `${report.message}\n\nTotal Scanned: ${report.total_files_scanned}\nNewly Loaded: ${report.newly_loaded.length}\nFailed to Load: ${Object.keys(report.failed_to_load).length}\n\n`;
             if(Object.keys(report.failed_to_load).length > 0) {
                 alertMessage += "Failed Files:\n";
-                for(const [file, error] of Object.entries(report.failed_to_load)) {
-                    alertMessage += `- ${file}: ${error}\n`;
-                }
+                for(const [file, error] of Object.entries(report.failed_to_load)) { alertMessage += `- ${file}: ${error}\n`; }
             }
-            
             alert(alertMessage);
             await loadSpeakers();
-
-        } catch (e) {
-            alert("An error occurred while rescanning: " + e.message);
-        }
+        } catch (e) { alert("An error occurred while rescanning: " + e.message); }
     }
 }
 
 async function handleGenerate() {
+    // STOP Butonuna basıldıysa
+    if (isPlaying) { 
+        stopPlayback(); 
+        return; 
+    }
+
     const textInput = document.getElementById('textInput');
     const text = textInput ? textInput.value.trim() : "";
-    
     if (!text) return alert("Please enter text to synthesize.");
-    if (isPlaying) { stopPlayback(); return; }
     
     let isStream = document.getElementById('stream').checked;
     const isSSML = text.startsWith('<speak>');
-
     if (isSSML && isStream) {
-        alert("SSML (advanced tags) is not supported in Streaming mode.\n\nYour request will be sent in Normal (high quality) mode to ensure correctness.");
+        alert("SSML is not supported in Streaming mode. Request will be sent in Normal mode.");
         isStream = false;
     }
 
     setPlayingState(true);
     const startTime = performance.now();
     let firstChunk = false;
+
+    // Audio Context Warmup
+    if(window.initAudioContext) window.initAudioContext();
 
     try {
         abortController = new AbortController();
@@ -207,30 +186,53 @@ async function handleGenerate() {
                     setStatusText("STREAMING");
                 }
                 const float32 = convertInt16ToFloat32(new Int16Array(value.buffer, value.byteOffset, value.byteLength / 2));
-                await playChunk(float32, params.sample_rate);
+                // Stream her zaman 24k gelir
+                await playChunk(float32, 24000);
             }
         } else {
             const blob = await response.blob();
             const url = URL.createObjectURL(blob);
             const player = document.getElementById('classicPlayer');
-            if(player) { player.src = url; player.play(); }
+            if(player) { 
+                player.src = url; 
+                player.play(); 
+            }
             updateLatency(Math.round(performance.now() - startTime));
             setStatusText("PLAYING (NON-STREAM)");
             await loadHistoryData(); 
         }
 
     } catch (err) {
-        if (err.name !== 'AbortError') { alert("Error: " + err.message); console.error(err); }
+        if (err.name !== 'AbortError') { 
+            alert("Error: " + err.message); 
+            console.error(err); 
+        }
     } finally {
         const finalDelay = document.getElementById('stream').checked && !isSSML ? 1500 : 100;
-        setTimeout(() => setPlayingState(false), finalDelay);
+        // Eğer kullanıcı elle durdurmadıysa, otomatik normale dön
+        if(isPlaying) setTimeout(() => setPlayingState(false), finalDelay);
     }
 }
 
 function stopPlayback() {
-    if (abortController) abortController.abort();
+    console.log("Stopping playback...");
+    if (abortController) {
+        abortController.abort();
+        abortController = null;
+    }
+    
+    // Audio Core'daki oynatmayı durdur
     if(window.resetAudioState) window.resetAudioState();
+    
+    // Klasik player'ı durdur
+    const player = document.getElementById('classicPlayer');
+    if(player) {
+        player.pause();
+        player.currentTime = 0;
+    }
+
     setPlayingState(false);
     const stat = document.getElementById('latencyStat');
     if(stat) stat.classList.add('hidden');
+    setStatusText("READY");
 }
