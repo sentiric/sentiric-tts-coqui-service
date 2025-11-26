@@ -20,16 +20,16 @@ UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
-def cleanup_files(file_paths: List[str]):
-    """Geçici dosyaları güvenli bir şekilde siler"""
+async def cleanup_files(file_paths: List[str]):
+    """Geçici dosyaları asenkron olarak siler (Event Loop'u bloklamaz)"""
     for path in file_paths:
         try:
             if os.path.exists(path):
-                os.remove(path)
+                # os.remove blocking I/O'dur, thread pool'a gönderiyoruz
+                await asyncio.to_thread(os.remove, path)
                 logger.info(f"Cleaned up: {path}")
         except Exception as e:
             logger.warning(f"Cleanup failed for {path}: {e}")
-
 
 @router.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -57,28 +57,27 @@ async def delete_all_history():
         history_manager.clear_all()
         files_deleted = 0
         
-        # History klasörünü temizle
+        # Dosya silme işlemlerini thread pool'a yayıyoruz
+        async def remove_safe(path):
+            try:
+                await asyncio.to_thread(os.remove, path)
+                return 1
+            except:
+                return 0
+
+        tasks = []
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
-                try:
-                    os.remove(f)
-                    files_deleted += 1
-                except:
-                    pass
+                tasks.append(remove_safe(f))
         
-        # Cache klasörünü temizle
         for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
-            try:
-                os.remove(f)
-            except:
-                pass
-        
-        # Latents klasörünü temizle
+            tasks.append(remove_safe(f))
+            
         for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
-            try:
-                os.remove(f)
-            except:
-                pass
+            tasks.append(remove_safe(f))
+            
+        results = await asyncio.gather(*tasks)
+        files_deleted = sum(results)
                 
         return {"status": "cleared", "files_deleted": files_deleted}
     except Exception as e:
@@ -90,7 +89,7 @@ async def delete_history_entry(filename: str):
         safe_filename = os.path.basename(filename)
         file_path = os.path.join(HISTORY_DIR, safe_filename)
         if os.path.exists(file_path):
-            os.remove(file_path)
+            await asyncio.to_thread(os.remove, file_path)
         history_manager.delete_entry(safe_filename)
         return {"status": "deleted"}
     except Exception as e:
@@ -122,8 +121,9 @@ async def generate_speech(request: TTSRequest):
             
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(audio_bytes)
+            
+            # Non-blocking write
+            await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
@@ -153,11 +153,17 @@ async def generate_speech_clone(
     
     saved_files = []
     try:
+        # Dosyaları diske kaydetme (CPU bound işlem değil ama I/O)
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
-            with open(file_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            
+            # Dosya yazma işlemini thread'e atıyoruz
+            def save_upload(src_file, dst_path):
+                with open(dst_path, "wb") as buffer:
+                    shutil.copyfileobj(src_file, buffer)
+            
+            await asyncio.to_thread(save_upload, file.file, file_path)
             saved_files.append(file_path)
             
         params = {
@@ -169,21 +175,23 @@ async def generate_speech_clone(
         if stream:
             async def stream_with_cleanup():
                 try:
+                    # Generator blocking değil, engine zaten içinde chunk üretiyor
                     for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
                         yield chunk
                 finally:
-                    cleanup_files(saved_files)
+                    # BURASI ÖNEMLİ: await kullanarak asenkron temizlik
+                    await cleanup_files(saved_files)
             
             return StreamingResponse(stream_with_cleanup(), media_type="application/octet-stream")
         else:
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
-            cleanup_files(saved_files)
+            await cleanup_files(saved_files)
             
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
-            with open(filepath, "wb") as f:
-                f.write(audio_bytes)
+            
+            await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
             
@@ -192,6 +200,6 @@ async def generate_speech_clone(
             return Response(content=audio_bytes, media_type=media_type)
             
     except Exception as e:
-        cleanup_files(saved_files)
+        await cleanup_files(saved_files)
         logger.error(f"Clone Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -9,7 +9,6 @@ import json
 import logging
 import threading
 import gc
-import xml.etree.ElementTree as ET
 
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
@@ -19,6 +18,7 @@ from TTS.utils.generic_utils import get_user_data_dir
 from app.core.config import settings
 from app.core.normalizer import normalizer
 from app.core.audio import audio_processor
+from app.core.ssml_handler import ssml_handler # YENİ IMPORT
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("XTTS-ENGINE")
@@ -77,57 +77,13 @@ class TTSEngine:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _parse_ssml(self, ssml_text: str):
-        try:
-            ssml_text = ssml_text.replace("&", "&amp;") 
-            parser = ET.XMLParser()
-            root = ET.fromstring(f"<root>{ssml_text}</root>", parser=parser)
-            segments = []
-            
-            def process_element(element, current_params):
-                if element.text and element.text.strip():
-                    segments.append({'type': 'text', 'content': element.text.strip(), 'params': current_params.copy()})
-                for child in element:
-                    child_params = current_params.copy()
-                    if child.tag == 'break':
-                        duration = 0.5
-                        try: 
-                            duration = float(child.get('time', '0.5s').replace('s',''))
-                        except: 
-                            pass
-                        segments.append({'type': 'break', 'duration': duration})
-                    elif child.tag == 'prosody':
-                        rate = child.get('rate')
-                        mapping = {"x-slow": 0.7, "slow": 0.85, "medium": 1.0, "fast": 1.2, "x-fast": 1.4}
-                        if rate in mapping: 
-                            child_params['speed'] = mapping[rate]
-                        else: 
-                            try: 
-                                child_params['speed'] = float(rate)
-                            except: 
-                                pass
-                    elif child.tag == 'emphasis':
-                        level = child.get('level', 'moderate')
-                        if level in ["strong", "moderate"]:
-                            child_params['speed'] = child_params.get('speed', 1.0) * 0.9
-                            child_params['repetition_penalty'] = child_params.get('repetition_penalty', 2.0) * 1.2
-                    process_element(child, child_params)
-                    if child.tail and child.tail.strip():
-                        segments.append({'type': 'text', 'content': child.tail.strip(), 'params': current_params.copy()})
-
-            process_element(root, {})
-            if not segments: 
-                return [{'type': 'text', 'content': "".join(root.itertext()), 'params': {}}]
-            return segments
-        except:
-            import re
-            return [{'type': 'text', 'content': re.sub(r'<[^>]+>', '', ssml_text), 'params': {}}]
+    # _parse_ssml METODU KALDIRILDI -> ssml_handler kullanılıyor.
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         text = normalizer.normalize(params.get("text", ""), params.get("language"))
         if not text: return b""
         
-        is_ssml = "<speak>" in text
+        is_ssml = ssml_handler.is_ssml(text)
         
         cache_key = None
         if not is_ssml and not speaker_wavs:
@@ -144,22 +100,32 @@ class TTSEngine:
                 gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                 
                 if is_ssml:
-                    segments = self._parse_ssml(text)
+                    # YENİ: SSML Handler kullanımı
+                    segments = ssml_handler.parse(text, params)
                     wav_chunks = []
+                    
                     for segment in segments:
                         if segment['type'] == 'text':
-                            inf_params = params.copy()
-                            inf_params.update(segment['params'])
+                            # Her segment için parametreleri override et
+                            inf_params = segment['params']
+                            
                             out = self.model.inference(
-                                segment['content'], inf_params.get("language"), gpt_cond_latent, speaker_embedding,
+                                segment['content'], 
+                                inf_params.get("language"), 
+                                gpt_cond_latent, 
+                                speaker_embedding,
                                 temperature=inf_params.get("temperature", 0.75),
                                 repetition_penalty=inf_params.get("repetition_penalty", 2.0),
-                                top_k=inf_params.get("top_k", 50), top_p=inf_params.get("top_p", 0.85),
+                                top_k=inf_params.get("top_k", 50), 
+                                top_p=inf_params.get("top_p", 0.85),
                                 speed=inf_params.get("speed", 1.0)
                             )
                             wav_chunks.append(torch.tensor(out['wav']))
+                            
                         elif segment['type'] == 'break':
+                            # 24000Hz örnekleme hızı varsayımı
                             wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
+                            
                     full_wav = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
                 else:
                     out = self.model.inference(
