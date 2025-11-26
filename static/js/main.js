@@ -227,6 +227,12 @@ window.toggleAdvanced = function() {
     }
 };
 
+// 1. Audio Core'un aradığı fonksiyonları UI sınıfına bağlıyoruz
+window.toggleMicUI = (isRec) => UI.toggleMicUI(isRec);
+window.onRecordingComplete = () => UI.onRecordingComplete();
+// HTML'deki "X" butonuna basınca çağrılır
+window.clearRecordingUI = () => UI.clearRecordingUI(); 
+
 // Global Access
 window.Controllers = Controllers;
 window.handleGenerate = () => Controllers.handleGenerate();
@@ -238,7 +244,8 @@ window.playHistory = (f) => Controllers.playHistory(f);
 
 // --- INIT ---
 document.addEventListener('DOMContentLoaded', () => {
-    if(window.initUIEvents) window.initUIEvents();
+    if(window.initUIEvents) window.initUIEvents(); // Slider olayları
+    UI.initCloneEvents(); // <--- YENİ: Dosya yükleme olayını başlat
     Controllers.loadSpeakers();
     
     const player = document.getElementById('classicPlayer');

@@ -120,4 +120,45 @@ class UI {
             list.appendChild(el);
         });
     }
+
+    static initCloneEvents() {
+        const fileInput = $('ref_audio');
+        if(fileInput) {
+            fileInput.addEventListener('change', (e) => { 
+                $('fileName').innerText = e.target.files[0] ? e.target.files[0].name : 'Drop .WAV here';
+                UI.clearRecordingUI(); 
+            });
+        }
+    }
+
+    static toggleMicUI(isRecording) {
+        const btn = $('micBtn');
+        const txt = $('micText');
+        if(isRecording) {
+            btn.classList.add('recording'); // CSS'de tanımlı pulse animasyonu
+            txt.innerText = "Recording...";
+        } else {
+            btn.classList.remove('recording');
+            txt.innerText = "Hold to Record";
+        }
+    }
+
+    static onRecordingComplete() {
+        $('audioPreview').classList.remove('hidden');
+        $('micBtn').classList.add('hidden');
+        $('fileName').innerText = "Using Microphone Audio";
+    }
+
+    static clearRecordingUI() {
+        // Global audio core fonksiyonunu çağır (Veriyi temizle)
+        if(window.clearRecordingData) window.clearRecordingData();
+        
+        $('audioPreview').classList.add('hidden');
+        $('micBtn').classList.remove('hidden');
+        $('fileName').innerText = "Click / Drop File";
+        
+        // Dosya inputunu da sıfırla
+        const fileInput = $('ref_audio');
+        if(fileInput) fileInput.value = '';
+    }    
 }
