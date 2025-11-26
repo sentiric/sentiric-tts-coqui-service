@@ -31,7 +31,8 @@ async def get_history():
 async def get_history_audio(filename: str):
     safe_filename = os.path.basename(filename)
     file_path = os.path.join(HISTORY_DIR, safe_filename)
-    if os.path.exists(file_path): return FileResponse(file_path)
+    if os.path.exists(file_path): 
+        return FileResponse(file_path)
     raise HTTPException(status_code=404, detail="Audio not found")
 
 @router.delete("/api/history/all")
@@ -39,13 +40,30 @@ async def delete_all_history():
     try:
         history_manager.clear_all()
         files_deleted = 0
+        
+        # History klasörünü temizle
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db":
-                try: os.remove(f); files_deleted += 1; except: pass
+                try: 
+                    os.remove(f)
+                    files_deleted += 1
+                except: 
+                    pass
+        
+        # Cache klasörünü temizle
         for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")):
-            try: os.remove(f); except: pass
+            try: 
+                os.remove(f)
+            except: 
+                pass
+                
+        # Latents klasörünü temizle
         for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")):
-            try: os.remove(f); except: pass
+            try: 
+                os.remove(f)
+            except: 
+                pass
+                
         return {"status": "cleared", "files_deleted": files_deleted}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -55,7 +73,8 @@ async def delete_history_entry(filename: str):
     try:
         safe_filename = os.path.basename(filename)
         file_path = os.path.join(HISTORY_DIR, safe_filename)
-        if os.path.exists(file_path): os.remove(file_path)
+        if os.path.exists(file_path): 
+            os.remove(file_path)
         history_manager.delete_entry(safe_filename)
         return {"status": "deleted"}
     except Exception as e:
@@ -87,7 +106,8 @@ async def generate_speech(request: TTSRequest):
             
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
-            with open(filepath, "wb") as f: f.write(audio_bytes)
+            with open(filepath, "wb") as f: 
+                f.write(audio_bytes)
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
@@ -120,7 +140,8 @@ async def generate_speech_clone(
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
-            with open(file_path, "wb") as buffer: shutil.copyfileobj(file.file, buffer)
+            with open(file_path, "wb") as buffer: 
+                shutil.copyfileobj(file.file, buffer)
             saved_files.append(file_path)
             
         params = {
@@ -136,7 +157,8 @@ async def generate_speech_clone(
             ext = output_format if output_format != "opus" else "opus"
             filename = f"clone_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
-            with open(filepath, "wb") as f: f.write(audio_bytes)
+            with open(filepath, "wb") as f: 
+                f.write(audio_bytes)
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
             
             media_type = "audio/wav"
@@ -148,4 +170,5 @@ async def generate_speech_clone(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         for f in saved_files:
-            if os.path.exists(f): os.unlink(f)
+            if os.path.exists(f): 
+                os.unlink(f)
