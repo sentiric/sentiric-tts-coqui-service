@@ -1,143 +1,123 @@
 const $ = id => document.getElementById(id);
 
-function insertSSMLTag(type) {
-    const textarea = $('textInput');
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const selectedText = textarea.value.substring(start, end);
-    let newText = '';
-
-    if (type === 'pause') {
-        newText = ' <break time="1s"/> ';
-        textarea.setRangeText(newText, start, end, 'end');
-    } else if (selectedText) {
-        if (type === 'emphasize') {
-            newText = `<emphasis level="strong">${selectedText}</emphasis>`;
-        } else if (type === 'slow') {
-            newText = `<prosody rate="slow">${selectedText}</prosody>`;
-        }
-        textarea.setRangeText(newText, start, end, 'end');
-    } else {
-        alert("Please select the text you want to wrap with the tag.");
-        textarea.focus();
-        return;
+class UI {
+    static toggleSpinner(show) {
+        // İlerde spinner eklersek burayı doldururuz
     }
 
-    const fullText = textarea.value.trim();
-    if (fullText && (!fullText.startsWith('<speak>') || !fullText.endsWith('</speak>'))) {
-        textarea.value = `<speak>${fullText}</speak>`;
-    }
-
-    textarea.focus();
-}
-
-function setMode(m) {
-    const active = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md bg-blue-600 text-white shadow-lg transition-all';
-    const inactive = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md text-gray-500 hover:text-white transition-all';
-    
-    if(m === 'standard') {
-        $('btn-std').className = active; $('btn-cln').className = inactive;
-        $('panel-std').classList.remove('hidden'); $('panel-cln').classList.add('hidden');
-    } else {
-        $('btn-cln').className = active; $('btn-std').className = inactive;
-        $('panel-cln').classList.remove('hidden'); $('panel-std').classList.add('hidden');
-    }
-}
-
-function toggleAdvanced() {
-    const panel = $('advanced-panel');
-    const icon = $('adv-icon');
-    if (panel.classList.contains('accordion-open')) {
-        panel.classList.remove('accordion-open');
-        icon.style.transform = 'rotate(0deg)';
-    } else {
-        panel.classList.add('accordion-open');
-        icon.style.transform = 'rotate(180deg)';
-    }
-}
-
-function toggleHistory() {
-    const d = $('historyDrawer');
-    const o = $('historyOverlay');
-    const isOpen = !d.classList.contains('translate-x-full');
-    
-    if(isOpen) {
-        d.classList.add('translate-x-full');
-        o.classList.remove('opacity-100');
-        setTimeout(() => o.classList.add('hidden'), 300);
-    } else {
-        d.classList.remove('translate-x-full');
-        o.classList.remove('hidden');
-        void o.offsetWidth;
-        o.classList.add('opacity-100');
-        if(window.loadHistoryData) window.loadHistoryData();
-    }
-}
-
-function toggleMicUI(isRecording) {
-    if(isRecording) {
-        $('micBtn').classList.add('recording');
-        $('micText').innerText = "Recording...";
-    } else {
-        $('micBtn').classList.remove('recording');
-        $('micText').innerText = "Hold to Record";
-    }
-}
-
-function onRecordingComplete() {
-    $('audioPreview').classList.remove('hidden');
-    $('micBtn').classList.add('hidden');
-    $('fileName').innerText = "Using Microphone Audio";
-}
-
-function clearRecordingUI() {
-    if(window.clearRecordingData) window.clearRecordingData();
-    $('audioPreview').classList.add('hidden');
-    $('micBtn').classList.remove('hidden');
-    $('fileName').innerText = "Click / Drop File";
-}
-
-function updVal(id) { $(`val-${id}`).innerText = $(id).value; }
-
-function setPlayingState(playing) {
-    if(playing) {
-        $('playIcon').classList.add('hidden');
-        $('stopIcon').classList.remove('hidden');
-        $('genBtn').classList.replace('bg-white','bg-red-500');
-        $('genBtn').classList.add('text-white');
-        $('statusText').innerText = "INITIALIZING...";
-        const mobBtn = $('mobileGenBtn');
-        if(mobBtn) {
-            mobBtn.innerHTML = '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
-            mobBtn.classList.add('bg-red-500'); mobBtn.classList.remove('bg-blue-600');
-        }
-    } else {
-        $('stopIcon').classList.add('hidden');
-        $('playIcon').classList.remove('hidden');
-        $('genBtn').classList.replace('bg-red-500','bg-white');
-        $('genBtn').classList.remove('text-white');
-        $('statusText').innerText = "READY";
-        const mobBtn = $('mobileGenBtn');
-        if(mobBtn) {
-            mobBtn.innerHTML = '<svg class="w-6 h-6 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
-            mobBtn.classList.remove('bg-red-500'); mobBtn.classList.add('bg-blue-600');
+    static setPlayingState(isPlaying) {
+        if(isPlaying) {
+            $('playIcon').classList.add('hidden');
+            $('stopIcon').classList.remove('hidden');
+            $('genBtn').classList.replace('bg-white','bg-red-500');
+            $('genBtn').classList.add('text-white');
+            $('statusText').innerText = "INITIALIZING...";
+            
+            const mobBtn = $('mobileGenBtn');
+            if(mobBtn) {
+                mobBtn.innerHTML = '<svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M6 6h12v12H6z"/></svg>';
+                mobBtn.classList.add('bg-red-500'); mobBtn.classList.remove('bg-blue-600');
+            }
+        } else {
+            $('stopIcon').classList.add('hidden');
+            $('playIcon').classList.remove('hidden');
+            $('genBtn').classList.replace('bg-red-500','bg-white');
+            $('genBtn').classList.remove('text-white');
+            $('statusText').innerText = "READY";
+            
+            const mobBtn = $('mobileGenBtn');
+            if(mobBtn) {
+                mobBtn.innerHTML = '<svg class="w-6 h-6 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>';
+                mobBtn.classList.remove('bg-red-500'); mobBtn.classList.add('bg-blue-600');
+            }
+            $('latencyStat').classList.add('hidden');
         }
     }
-}
 
-function updateLatency(ms) {
-    $('latencyVal').innerText = `${ms}ms`;
-    $('latencyStat').classList.remove('hidden');
-}
+    static updateLatency(ms) {
+        $('latencyVal').innerText = `${ms}ms`;
+        $('latencyStat').classList.remove('hidden');
+    }
 
-function setStatusText(text) {
-    $('statusText').innerText = text;
-}
+    static setStatus(text) {
+        $('statusText').innerText = text;
+    }
 
-function initUIEvents() {
-    ['temp', 'speed', 'topk', 'topp', 'rep'].forEach(id => $(id).addEventListener('input', () => updVal(id)));
-    $('ref_audio').addEventListener('change', (e) => { 
-        $('fileName').innerText = e.target.files[0] ? e.target.files[0].name : 'Drop .WAV here';
-        clearRecordingUI(); 
-    });
+    static populateSpeakers(data) {
+        const sel = $('speaker');
+        if(!sel) return;
+        sel.innerHTML = '';
+        const groups = { 'Female': [], 'Male': [], 'Other': [] };
+        
+        data.speakers.forEach(s => {
+            if(s.includes('F_')) groups['Female'].push(s);
+            else if(s.includes('M_')) groups['Male'].push(s);
+            else groups['Other'].push(s);
+        });
+
+        Object.keys(groups).forEach(k => {
+            if(groups[k].length) {
+                const g = document.createElement('optgroup'); 
+                g.label = k;
+                groups[k].forEach(s => {
+                    const o = document.createElement('option'); 
+                    o.value = s;
+                    o.innerText = s.replace('[FILE] ','').replace('F_','').replace('M_','').replace('.wav','').replace(/_/g,' ');
+                    g.appendChild(o);
+                });
+                sel.appendChild(g);
+            }
+        });
+    }
+
+    static renderHistory(data) {
+        const list = $('historyList');
+        if(!list) return;
+        
+        const header = `
+        <div class="flex justify-between items-center mb-4 px-1">
+            <span class="text-[10px] text-gray-500 font-bold uppercase">Recent Generations</span>
+            <button onclick="Controllers.clearAllHistory()" class="text-[9px] text-red-500 hover:text-red-400 bg-red-900/10 px-2 py-1 rounded border border-red-900/30 hover:bg-red-900/30 transition-all">CLEAR ALL</button>
+        </div>`;
+        
+        list.innerHTML = header;
+        
+        if(data.length === 0) {
+            list.innerHTML += '<div class="text-center text-[10px] text-gray-600 mt-10">No history yet...</div>';
+            return;
+        }
+
+        data.forEach(item => {
+            const el = document.createElement('div');
+            el.className = 'bg-[#18181b] p-3 rounded-lg border border-white/5 hover:border-blue-500/30 transition-colors group flex flex-col gap-2 mb-2';
+            const timeStr = item.date ? item.date.split(' ')[1] : '';
+            
+            el.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <span class="text-[9px] font-bold text-blue-400 bg-blue-900/20 px-1.5 py-0.5 rounded uppercase">${item.mode || 'TTS'}</span>
+                    <div class="flex items-center gap-2">
+                         <span class="text-[9px] text-gray-600 font-mono">${timeStr}</span>
+                         <button onclick="Controllers.deleteHistory('${item.filename}')" class="text-gray-600 hover:text-red-500 transition-colors" title="Delete">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                         </button>
+                    </div>
+                </div>
+                <p class="text-xs text-gray-300 line-clamp-2 italic border-l-2 border-gray-700 pl-2">"${item.text}"</p>
+                <div class="flex justify-between items-center pt-1 border-t border-white/5 mt-1">
+                    <span class="text-[10px] text-gray-500 truncate max-w-[120px] flex items-center gap-1" title="${item.speaker}">
+                        ${item.mode === 'Cloning' ? '🧬' : '🎙️'} ${item.speaker || 'Unknown'}
+                    </span>
+                    <div class="flex gap-2">
+                        <button onclick="Controllers.playHistory('${item.filename}')" class="text-gray-400 hover:text-white transition-colors p-1 rounded hover:bg-white/10" title="Play">
+                            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                        </button>
+                        <a href="/api/history/audio/${item.filename}" download class="text-gray-400 hover:text-blue-400 transition-colors p-1 rounded hover:bg-white/10" title="Download">
+                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        </a>
+                    </div>
+                </div>
+            `;
+            list.appendChild(el);
+        });
+    }
 }
