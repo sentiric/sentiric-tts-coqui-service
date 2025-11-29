@@ -1,21 +1,37 @@
+# 
+
 networks:
   sentiric-net:
     name: "${NETWORK_NAME:-sentiric.cloud}"
     driver: bridge
     ipam:
       config:
-        - subnet: ${NETWORK_SUBNET}
-          gateway: ${NETWORK_GATEWAY}
+        - subnet: ${NETWORK_SUBNET:-10.88.0.0/16}
+          gateway: ${NETWORK_GATEWAY:-10.88.0.1}
           
 volumes:
+  # =============================================================
+  # KATMAN 4: YAPAY ZEKA UZMAN MOTORLARI (AI EXPERT ENGINES)
+  # Gerçek AI işini yapan, potansiyel olarak yavaş başlayan servisler.
+  # =============================================================
+
+
   # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
   # --------------------------------------------------     
   tts-coqui-models:
   tts-coqui-speakers:
   tts-coqui-history:
-  tts-coqui-cache:    
+  tts-coqui-cache:  
 
 services:
+  # =============================================================
+  # KATMAN 4: YAPAY ZEKA UZMAN MOTORLARI (AI EXPERT ENGINES)
+  # Gerçek AI işini yapan, potansiyel olarak yavaş başlayan servisler.
+  # =============================================================
+
+
+  # [capability-tts]: Konuşma Sentezleme Yetenekleri (TTS Capabilities)
+  # --------------------------------------------------     
   tts-coqui-service:
     image: ghcr.io/sentiric/sentiric-tts-coqui-service:latest-gpu
     build:

@@ -51,3 +51,11 @@ class TTSRequest(BaseModel):
     # FIX: Regex genişletildi (wav, mp3, opus, pcm)
     output_format: str = Field("wav", pattern="^(wav|mp3|opus|pcm)$", description="Ses dosya formatı")
     split_sentences: bool = Field(True, description="Uzun metinleri cümlelere böl (Daha doğal duraklama)")
+
+
+class OpenAISpeechRequest(BaseModel):
+    model: str = Field("tts-1", description="Model adı (Göz ardı edilir, backend varsayılanı kullanır)")
+    input: str = Field(..., description="Okunacak metin")
+    voice: str = Field("alloy", description="Ses ID'si")
+    response_format: str = Field("mp3", description="Çıktı formatı (mp3, opus, aac, flac, wav, pcm)")
+    speed: float = Field(1.0, description="Konuşma hızı (0.25 - 4.0)")
