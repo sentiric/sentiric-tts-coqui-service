@@ -140,14 +140,17 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Autocast kaldırıldı. Doğrudan Inference Mode.
+                # Non-Stream modunda Half Precision Girdileri Kullan
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
+                    if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
+                        gpt_cond_latent = gpt_cond_latent.half()
+                        speaker_embedding = speaker_embedding.half()
+
                     if is_ssml:
                         segments = ssml_handler.parse(text, params)
                         wav_chunks = []
-                        
                         for segment in segments:
                             if segment['type'] == 'text':
                                 inf_params = segment['params']
@@ -165,7 +168,6 @@ class TTSEngine:
                                 wav_chunks.append(torch.tensor(out['wav']))
                             elif segment['type'] == 'break':
                                 wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
-                                
                         full_wav = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
                     else:
                         out = self.model.inference(
@@ -187,25 +189,29 @@ class TTSEngine:
             params.get("sample_rate", 24000),
             add_silence=True 
         )
-        
-        if not is_ssml and cache_key: 
-            self._save_cache(cache_key, final_audio)
+        if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
         text = normalizer.normalize(params.get("text", ""), params.get("language"))
         lang = params.get("language")
-        if not lang or lang == "auto": 
-            lang = langid.classify(text)[0].strip()
-        if lang == "zh": 
-            lang = "zh-cn"
+        if not lang or lang == "auto": lang = langid.classify(text)[0].strip()
+        if lang == "zh": lang = "zh-cn"
         
         with self._thread_lock:
             try:
-                # Streaming için Autocast KALDIRILDI.
+                # STRATEJİ DEĞİŞİKLİĞİ: Streaming için Tensörleri Float (FP32) bırak!
+                # Model Half olsa bile, inference_stream içindeki operasyonlar Float bekliyor olabilir.
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
+                    # BURADA .half() YAPMIYORUZ! Float32 olarak gönderiyoruz.
+                    # Eğer hata "Expected Half but found Float" ise, o zaman .half() yaparız.
+                    # Şu anki hata "Expected Float but found Half" idi, yani Float istiyor.
+                    if settings.DEVICE == "cuda":
+                        gpt_cond_latent = gpt_cond_latent.float()
+                        speaker_embedding = speaker_embedding.float()
+
                     chunks = self.model.inference_stream(
                         text, lang, gpt_cond_latent, speaker_embedding,
                         temperature=params.get("temperature", 0.75), repetition_penalty=params.get("repetition_penalty", 2.0),
@@ -234,7 +240,6 @@ class TTSEngine:
 
         report = {"success": [], "failed": {}, "total_scanned": 0}
         new_cache = []
-        
         if os.path.exists(self.SPEAKERS_DIR):
             files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
             report["total_scanned"] = len(files)
@@ -246,7 +251,6 @@ class TTSEngine:
         self.speakers_cache = sorted(new_cache)
         self.last_cache_update = now
         logger.info(f"🔊 Speakers refreshed. Total: {len(self.speakers_cache)}")
-        
         return report
 
     def get_speakers(self):
@@ -260,56 +264,34 @@ class TTSEngine:
         
         if not speaker_idx:
             speakers = self.get_speakers()
-            if speakers:
-                speaker_idx = speakers[0]
-            else:
-                self._ensure_fallback_speaker()
-                speaker_idx = "system_default"
+            speaker_idx = speakers[0] if speakers else "system_default"
+            if not speakers: self._ensure_fallback_speaker()
         
         latent_file = os.path.join(self.LATENTS_DIR, f"{speaker_idx}.json")
         if os.path.exists(latent_file):
             try:
-                with open(latent_file, 'r') as f: 
-                    data = json.load(f)
+                with open(latent_file, 'r') as f: data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
-                
-                # --- KRİTİK GÜNCELLEME ---
-                # Tensörleri önce CUDA'ya, sonra gerekirse HALF'a çeviriyoruz.
                 if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                     gpt_cond_latent = gpt_cond_latent.cuda()
                     speaker_embedding = speaker_embedding.cuda()
-                    
-                    if settings.ENABLE_HALF_PRECISION:
-                        gpt_cond_latent = gpt_cond_latent.half()
-                        speaker_embedding = speaker_embedding.half()
-                        
                 return gpt_cond_latent, speaker_embedding
-            except: 
-                pass
+            except: pass
             
         wav_path = os.path.join(self.SPEAKERS_DIR, f"{speaker_idx}.wav")
         if not os.path.exists(wav_path): 
             files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
             wav_path = files[0] if files else None
-        
         if not wav_path:
             self._ensure_fallback_speaker()
             wav_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
 
         gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
-        
-        # --- KRİTİK GÜNCELLEME (İLK OLUŞTURMA) ---
-        if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
-            gpt_cond_latent = gpt_cond_latent.half()
-            speaker_embedding = speaker_embedding.half()
-
         try:
             with open(latent_file, 'w') as f: 
-                # Kaydederken float olarak kaydet (JSON uyumluluğu)
                 json.dump({"gpt_cond_latent": gpt_cond_latent.float().cpu().tolist(), "speaker_embedding": speaker_embedding.float().cpu().tolist()}, f)
-        except: 
-            pass
+        except: pass
         return gpt_cond_latent, speaker_embedding
 
     def _generate_cache_key(self, params):
@@ -321,15 +303,13 @@ class TTSEngine:
         if not key: return None
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
-            try:
-                with open(path, "rb") as f: return f.read()
+            try: with open(path, "rb") as f: return f.read()
             except: return None
         return None
 
     def _save_cache(self, key, data):
         if not key: return
-        try:
-            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: f.write(data)
+        try: with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: f.write(data)
         except: pass
 
 tts_engine = TTSEngine()
