@@ -49,10 +49,8 @@ class TTSEngine:
         if not self.model:
             logger.info("🚀 Initializing XTTS v2 Core Engine...")
             try:
-                # RTX Ampere Optimizasyonu (Hız için, VRAM etkilemez)
-                if torch.cuda.is_available():
-                    torch.set_float32_matmul_precision("high")
-                    logger.info("⚡ RTX Ampere Optimization Enabled (TF32)")
+                # --- OPTIMIZASYON KAPALI (NaN Debug) ---
+                # torch.set_float32_matmul_precision("high") 
 
                 self._ensure_fallback_speaker()
 
@@ -69,7 +67,7 @@ class TTSEngine:
                     vocab_path=os.path.join(model_path, "vocab.json"),
                     checkpoint_dir=model_path,
                     eval=True,
-                    use_deepspeed=settings.ENABLE_DEEPSPEED,
+                    use_deepspeed=False, # DeepSpeed kesinlikle kapalı
                 )
                 
                 target_device = settings.DEVICE
@@ -79,7 +77,7 @@ class TTSEngine:
 
                 if target_device == "cuda" and cuda_available:
                     self.model.cuda()
-                    logger.info("✅ Model successfully moved to GPU (CUDA). Running in FP32 for stability.")
+                    logger.info("✅ Model successfully moved to GPU (CUDA). Running in standard FP32.")
                 else:
                     logger.warning("⚠️ Model running on CPU (Slow Performance).")
                 
@@ -90,7 +88,6 @@ class TTSEngine:
                 raise e
 
     def _cleanup_memory(self):
-        """Agresif bellek temizliği."""
         if settings.LOW_RESOURCE_MODE:
             gc.collect()
             if torch.cuda.is_available():
@@ -127,7 +124,7 @@ class TTSEngine:
                 logger.info("⚡ Cache HIT")
                 return cached
 
-        logger.info(f"🐢 Synthesizing (FP32)...")
+        logger.info(f"🐢 Synthesizing (Safe Mode)...")
         
         with self._thread_lock:
             try:
@@ -145,11 +142,11 @@ class TTSEngine:
                                     inf_params.get("language"), 
                                     gpt_cond_latent, 
                                     speaker_embedding,
-                                    temperature=inf_params.get("temperature", 0.75),
-                                    repetition_penalty=inf_params.get("repetition_penalty", 2.0),
-                                    top_k=inf_params.get("top_k", 50), 
-                                    top_p=inf_params.get("top_p", 0.85),
-                                    speed=inf_params.get("speed", 1.0)
+                                    temperature=0.1, # Daha düşük sıcaklık (Daha kararlı)
+                                    repetition_penalty=2.0,
+                                    top_k=50, 
+                                    top_p=0.8,
+                                    speed=1.0
                                 )
                                 wav_chunks.append(torch.tensor(out['wav']))
                             elif segment['type'] == 'break':
@@ -158,8 +155,9 @@ class TTSEngine:
                     else:
                         out = self.model.inference(
                             text, params.get("language"), gpt_cond_latent, speaker_embedding,
-                            temperature=params.get("temperature", 0.75), repetition_penalty=params.get("repetition_penalty", 2.0),
-                            top_k=params.get("top_k", 50), top_p=params.get("top_p", 0.85), speed=params.get("speed", 1.0)
+                            temperature=0.1, # SAFE PARAM
+                            repetition_penalty=2.0,
+                            top_k=50, top_p=0.8, speed=1.0
                         )
                         full_wav = torch.tensor(out["wav"])
 
@@ -194,8 +192,9 @@ class TTSEngine:
                     
                     chunks = self.model.inference_stream(
                         text, lang, gpt_cond_latent, speaker_embedding,
-                        temperature=params.get("temperature", 0.75), repetition_penalty=params.get("repetition_penalty", 2.0),
-                        top_k=params.get("top_k", 50), top_p=params.get("top_p", 0.85), speed=params.get("speed", 1.0),
+                        temperature=0.1, # SAFE PARAM
+                        repetition_penalty=2.0,
+                        top_k=50, top_p=0.8, speed=1.0,
                         enable_text_splitting=True
                     )
 
@@ -239,7 +238,6 @@ class TTSEngine:
         return self.speakers_cache
 
     def _get_latents(self, speaker_idx, speaker_wavs):
-        """Latent vektörleri FP32 (Float) olarak döndürür."""
         if speaker_wavs: 
             latents = self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
             return self._to_cuda(latents)
