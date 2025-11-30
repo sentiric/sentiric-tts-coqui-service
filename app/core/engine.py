@@ -140,14 +140,8 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # AUTOCAST KULLANIMI: Tip uyuşmazlığını otomatik çözer
-                # Eğer cihaz CUDA ise autocast kullan, değilse normal çalış.
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                
-                # FP16 sadece CUDA'da anlamlıdır (CPU'da bfloat16 gerekebilir ama şimdilik cuda odaklıyız)
-                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                # Autocast kaldırıldı. Doğrudan Inference Mode.
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
                     if is_ssml:
@@ -182,7 +176,7 @@ class TTSEngine:
                         full_wav = torch.tensor(out["wav"])
 
                     if settings.DEVICE == "cuda": 
-                        full_wav = full_wav.float().cpu() # Çıktıyı float32'ye çevirip CPU'ya al (ses işleme için)
+                        full_wav = full_wav.cpu()
             finally:
                 self._cleanup_memory()
 
@@ -208,10 +202,8 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                # Streaming için Autocast KALDIRILDI.
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
                     chunks = self.model.inference_stream(
@@ -223,8 +215,7 @@ class TTSEngine:
 
                     for chunk in chunks:
                         if settings.DEVICE == "cuda": 
-                            # Autocast içindeyken chunk HalfTensor olabilir, ses için float32'ye çevir.
-                            chunk = chunk.float().cpu()
+                            chunk = chunk.cpu()
                         
                         wav_chunk_float = chunk.numpy()
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
@@ -283,11 +274,16 @@ class TTSEngine:
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
                 
-                # Autocast kullanacağımız için burada elle çevirmemize gerek yok,
-                # ama CUDA'ya atmalıyız.
+                # --- KRİTİK GÜNCELLEME ---
+                # Tensörleri önce CUDA'ya, sonra gerekirse HALF'a çeviriyoruz.
                 if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                     gpt_cond_latent = gpt_cond_latent.cuda()
                     speaker_embedding = speaker_embedding.cuda()
+                    
+                    if settings.ENABLE_HALF_PRECISION:
+                        gpt_cond_latent = gpt_cond_latent.half()
+                        speaker_embedding = speaker_embedding.half()
+                        
                 return gpt_cond_latent, speaker_embedding
             except: 
                 pass
@@ -303,8 +299,14 @@ class TTSEngine:
 
         gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
         
+        # --- KRİTİK GÜNCELLEME (İLK OLUŞTURMA) ---
+        if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
+            gpt_cond_latent = gpt_cond_latent.half()
+            speaker_embedding = speaker_embedding.half()
+
         try:
             with open(latent_file, 'w') as f: 
+                # Kaydederken float olarak kaydet (JSON uyumluluğu)
                 json.dump({"gpt_cond_latent": gpt_cond_latent.float().cpu().tolist(), "speaker_embedding": speaker_embedding.float().cpu().tolist()}, f)
         except: 
             pass
