@@ -79,22 +79,18 @@ class TTSEngine:
                 if target_device == "cuda" and cuda_available:
                     self.model.cuda()
                     
+                    # --- MODEL AĞIRLIKLARI (WEIGHTS) ---
+                    # Modeli BFLOAT16 yapıyoruz (VRAM tasarrufu + NaN koruması)
                     if settings.ENABLE_HALF_PRECISION:
-                        try:
-                            # RTX 30xx ve üzeri için BFLOAT16 (NaN önleyici)
-                            if torch.cuda.is_bf16_supported():
-                                self.model.bfloat16()
-                                logger.info("✅ Model converted to BFLOAT16 (Stable & Fast for RTX 3060).")
-                            else:
-                                self.model.half()
-                                logger.info("✅ Model converted to FLOAT16 (Standard Half Precision).")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to convert to Half Precision: {e}")
+                        if torch.cuda.is_bf16_supported():
+                            self.model.bfloat16()
+                            logger.info("✅ Model converted to BFLOAT16 (Stable & Fast for RTX 3060).")
+                        else:
+                            self.model.half()
+                            logger.info("✅ Model converted to FLOAT16 (Standard Half Precision).")
                     
                     logger.info("✅ Model successfully moved to GPU (CUDA).")
                 else:
-                    if target_device == "cuda" and not cuda_available:
-                        logger.error("❌ Config asked for CUDA but torch.cuda.is_available() is False!")
                     logger.warning("⚠️ Model running on CPU (Slow Performance).")
                 
                 self.refresh_speakers(force=True)
@@ -145,8 +141,17 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Inference Mode
-                with torch.inference_mode():
+                # --- STRATEJİ: BFLOAT16 AUTOCAST ---
+                # Girdiler Float32 kalacak, Model BFloat16. Autocast arayı bulacak.
+                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
+                
+                target_dtype = torch.float16
+                if torch.cuda.is_bf16_supported() and settings.ENABLE_HALF_PRECISION:
+                    target_dtype = torch.bfloat16
+                
+                use_autocast = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
+
+                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=target_dtype, enabled=use_autocast):
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
                     if is_ssml:
@@ -179,7 +184,11 @@ class TTSEngine:
                         full_wav = torch.tensor(out["wav"])
 
                     if settings.DEVICE == "cuda": 
-                        full_wav = full_wav.float().cpu() # Ses verisi için float'a geri dön
+                        full_wav = full_wav.float().cpu()
+            except Exception as e:
+                logger.error(f"Synthesize Error: {e}")
+                # Hata durumunda boş dönme, belki bir sonraki istek çalışır
+                return b""
             finally:
                 self._cleanup_memory()
 
@@ -190,9 +199,7 @@ class TTSEngine:
             params.get("sample_rate", 24000),
             add_silence=True 
         )
-        
-        if not is_ssml and cache_key: 
-            self._save_cache(cache_key, final_audio)
+        if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
@@ -203,10 +210,9 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Streaming Modu: Autocast ile FP16/BFLOAT16 desteği
+                # --- STRATEJİ: BFLOAT16 AUTOCAST ---
                 device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
                 
-                # Hangi tipe göre autocast yapacağını belirle
                 target_dtype = torch.float16
                 if torch.cuda.is_bf16_supported() and settings.ENABLE_HALF_PRECISION:
                     target_dtype = torch.bfloat16
@@ -215,8 +221,6 @@ class TTSEngine:
 
                 with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=target_dtype, enabled=use_autocast):
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
-                    
-                    # Latentler FP32 olarak geliyor (_get_latents içinde ayarlı), autocast bunları halledecek.
                     
                     chunks = self.model.inference_stream(
                         text, lang, gpt_cond_latent, speaker_embedding,
@@ -265,9 +269,10 @@ class TTSEngine:
         return self.speakers_cache
 
     def _get_latents(self, speaker_idx, speaker_wavs):
-        """Latent vektörleri FP32 (Float) olarak döndürür."""
+        """Latent vektörleri yükler. Dönüş tipi HER ZAMAN FLOAT32."""
         if speaker_wavs: 
-            return self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
+            latents = self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
+            return self._to_cuda_float(latents)
         
         if not speaker_idx:
             speakers = self.get_speakers()
@@ -280,12 +285,7 @@ class TTSEngine:
                 with open(latent_file, 'r') as f: data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
-                
-                # Autocast kullanacağımız için sadece CUDA'ya atıyoruz, FP32 bırakıyoruz.
-                if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
-                    gpt_cond_latent = gpt_cond_latent.cuda()
-                    speaker_embedding = speaker_embedding.cuda()
-                return gpt_cond_latent, speaker_embedding
+                return self._to_cuda_float((gpt_cond_latent, speaker_embedding))
             except: pass
             
         wav_path = os.path.join(self.SPEAKERS_DIR, f"{speaker_idx}.wav")
@@ -296,11 +296,21 @@ class TTSEngine:
             self._ensure_fallback_speaker()
             wav_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
 
-        gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
+        latents = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
+        
         try:
             with open(latent_file, 'w') as f: 
-                json.dump({"gpt_cond_latent": gpt_cond_latent.float().cpu().tolist(), "speaker_embedding": speaker_embedding.float().cpu().tolist()}, f)
+                json.dump({"gpt_cond_latent": latents[0].float().cpu().tolist(), "speaker_embedding": latents[1].float().cpu().tolist()}, f)
         except: pass
+        
+        return self._to_cuda_float(latents)
+
+    def _to_cuda_float(self, latents):
+        """Tensörleri CUDA'ya atar ama TİPİNİ FLOAT32 OLARAK KORUR."""
+        gpt_cond_latent, speaker_embedding = latents
+        if settings.DEVICE == "cuda" and torch.cuda.is_available():
+            gpt_cond_latent = gpt_cond_latent.to(device="cuda", dtype=torch.float32)
+            speaker_embedding = speaker_embedding.to(device="cuda", dtype=torch.float32)
         return gpt_cond_latent, speaker_embedding
 
     def _generate_cache_key(self, params):
@@ -313,7 +323,7 @@ class TTSEngine:
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
             try: 
-                with open(path, "rb") as f:
+                with open(path, "rb") as f: 
                     return f.read()
             except: return None
         return None
