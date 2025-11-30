@@ -49,9 +49,10 @@ class TTSEngine:
         if not self.model:
             logger.info("🚀 Initializing XTTS v2 Core Engine...")
             try:
+                # RTX Ampere Optimizasyonu (Hız için, VRAM etkilemez)
                 if torch.cuda.is_available():
                     torch.set_float32_matmul_precision("high")
-                    logger.info("⚡ RTX Ampere Optimization Enabled (Float32 Matmul Precision: High)")
+                    logger.info("⚡ RTX Ampere Optimization Enabled (TF32)")
 
                 self._ensure_fallback_speaker()
 
@@ -78,18 +79,7 @@ class TTSEngine:
 
                 if target_device == "cuda" and cuda_available:
                     self.model.cuda()
-                    
-                    # --- MODEL AĞIRLIKLARI (WEIGHTS) ---
-                    # Modeli BFLOAT16 yapıyoruz (VRAM tasarrufu + NaN koruması)
-                    if settings.ENABLE_HALF_PRECISION:
-                        if torch.cuda.is_bf16_supported():
-                            self.model.bfloat16()
-                            logger.info("✅ Model converted to BFLOAT16 (Stable & Fast for RTX 3060).")
-                        else:
-                            self.model.half()
-                            logger.info("✅ Model converted to FLOAT16 (Standard Half Precision).")
-                    
-                    logger.info("✅ Model successfully moved to GPU (CUDA).")
+                    logger.info("✅ Model successfully moved to GPU (CUDA). Running in FP32 for stability.")
                 else:
                     logger.warning("⚠️ Model running on CPU (Slow Performance).")
                 
@@ -100,6 +90,7 @@ class TTSEngine:
                 raise e
 
     def _cleanup_memory(self):
+        """Agresif bellek temizliği."""
         if settings.LOW_RESOURCE_MODE:
             gc.collect()
             if torch.cuda.is_available():
@@ -128,7 +119,6 @@ class TTSEngine:
         if not text: return b""
         
         is_ssml = ssml_handler.is_ssml(text)
-        
         cache_key = None
         if not is_ssml and not speaker_wavs:
             cache_key = self._generate_cache_key({**params, "text": text})
@@ -137,21 +127,11 @@ class TTSEngine:
                 logger.info("⚡ Cache HIT")
                 return cached
 
-        logger.info(f"🐢 Synthesizing...")
+        logger.info(f"🐢 Synthesizing (FP32)...")
         
         with self._thread_lock:
             try:
-                # --- STRATEJİ: BFLOAT16 AUTOCAST ---
-                # Girdiler Float32 kalacak, Model BFloat16. Autocast arayı bulacak.
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                
-                target_dtype = torch.float16
-                if torch.cuda.is_bf16_supported() and settings.ENABLE_HALF_PRECISION:
-                    target_dtype = torch.bfloat16
-                
-                use_autocast = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=target_dtype, enabled=use_autocast):
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
                     if is_ssml:
@@ -184,10 +164,9 @@ class TTSEngine:
                         full_wav = torch.tensor(out["wav"])
 
                     if settings.DEVICE == "cuda": 
-                        full_wav = full_wav.float().cpu()
+                        full_wav = full_wav.cpu()
             except Exception as e:
                 logger.error(f"Synthesize Error: {e}")
-                # Hata durumunda boş dönme, belki bir sonraki istek çalışır
                 return b""
             finally:
                 self._cleanup_memory()
@@ -210,16 +189,7 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # --- STRATEJİ: BFLOAT16 AUTOCAST ---
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                
-                target_dtype = torch.float16
-                if torch.cuda.is_bf16_supported() and settings.ENABLE_HALF_PRECISION:
-                    target_dtype = torch.bfloat16
-                
-                use_autocast = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=target_dtype, enabled=use_autocast):
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
                     chunks = self.model.inference_stream(
@@ -231,7 +201,7 @@ class TTSEngine:
 
                     for chunk in chunks:
                         if settings.DEVICE == "cuda": 
-                            chunk = chunk.float().cpu()
+                            chunk = chunk.cpu()
                         
                         wav_chunk_float = chunk.numpy()
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
@@ -269,10 +239,10 @@ class TTSEngine:
         return self.speakers_cache
 
     def _get_latents(self, speaker_idx, speaker_wavs):
-        """Latent vektörleri yükler. Dönüş tipi HER ZAMAN FLOAT32."""
+        """Latent vektörleri FP32 (Float) olarak döndürür."""
         if speaker_wavs: 
             latents = self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
-            return self._to_cuda_float(latents)
+            return self._to_cuda(latents)
         
         if not speaker_idx:
             speakers = self.get_speakers()
@@ -285,7 +255,7 @@ class TTSEngine:
                 with open(latent_file, 'r') as f: data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
-                return self._to_cuda_float((gpt_cond_latent, speaker_embedding))
+                return self._to_cuda((gpt_cond_latent, speaker_embedding))
             except: pass
             
         wav_path = os.path.join(self.SPEAKERS_DIR, f"{speaker_idx}.wav")
@@ -300,17 +270,16 @@ class TTSEngine:
         
         try:
             with open(latent_file, 'w') as f: 
-                json.dump({"gpt_cond_latent": latents[0].float().cpu().tolist(), "speaker_embedding": latents[1].float().cpu().tolist()}, f)
+                json.dump({"gpt_cond_latent": latents[0].cpu().tolist(), "speaker_embedding": latents[1].cpu().tolist()}, f)
         except: pass
         
-        return self._to_cuda_float(latents)
+        return self._to_cuda(latents)
 
-    def _to_cuda_float(self, latents):
-        """Tensörleri CUDA'ya atar ama TİPİNİ FLOAT32 OLARAK KORUR."""
+    def _to_cuda(self, latents):
         gpt_cond_latent, speaker_embedding = latents
         if settings.DEVICE == "cuda" and torch.cuda.is_available():
-            gpt_cond_latent = gpt_cond_latent.to(device="cuda", dtype=torch.float32)
-            speaker_embedding = speaker_embedding.to(device="cuda", dtype=torch.float32)
+            gpt_cond_latent = gpt_cond_latent.cuda()
+            speaker_embedding = speaker_embedding.cuda()
         return gpt_cond_latent, speaker_embedding
 
     def _generate_cache_key(self, params):
@@ -323,7 +292,7 @@ class TTSEngine:
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
             try: 
-                with open(path, "rb") as f: 
+                with open(path, "rb") as f:
                     return f.read()
             except: return None
         return None
