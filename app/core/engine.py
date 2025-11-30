@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import gc
+import torchaudio
 
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
@@ -18,7 +19,7 @@ from TTS.utils.generic_utils import get_user_data_dir
 from app.core.config import settings
 from app.core.normalizer import normalizer
 from app.core.audio import audio_processor
-from app.core.ssml_handler import ssml_handler # YENİ IMPORT
+from app.core.ssml_handler import ssml_handler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("XTTS-ENGINE")
@@ -35,6 +36,10 @@ class TTSEngine:
         if cls._instance is None:
             cls._instance = super(TTSEngine, cls).__new__(cls)
             cls._instance.model = None
+            cls._instance.speakers_cache = []
+            cls._instance.last_cache_update = 0
+            cls._instance.CACHE_TTL = 60
+            
             os.makedirs(cls.SPEAKERS_DIR, exist_ok=True)
             os.makedirs(cls.CACHE_DIR, exist_ok=True)
             os.makedirs(cls.LATENTS_DIR, exist_ok=True)
@@ -44,6 +49,8 @@ class TTSEngine:
         if not self.model:
             logger.info("🚀 Initializing XTTS v2 Core Engine...")
             try:
+                self._ensure_fallback_speaker()
+
                 model_name = settings.MODEL_NAME
                 ModelManager().download_model(model_name)
                 model_path = os.path.join(get_user_data_dir("tts"), model_name.replace("/", "--"))
@@ -60,13 +67,22 @@ class TTSEngine:
                     use_deepspeed=False,
                 )
                 
-                if settings.DEVICE == "cuda" and torch.cuda.is_available():
-                    self.model.cuda()
-                    logger.info("✅ Model loaded to GPU (CUDA).")
-                else:
-                    logger.warning("⚠️ Model loaded to CPU.")
+                # --- GPU DEBUG & FORCE LOGIC ---
+                target_device = settings.DEVICE
+                cuda_available = torch.cuda.is_available()
                 
-                self.refresh_speakers()
+                logger.info(f"⚙️  Config Device: '{target_device}' | CUDA Available: {cuda_available}")
+
+                if target_device == "cuda" and cuda_available:
+                    self.model.cuda()
+                    logger.info("✅ Model successfully moved to GPU (CUDA).")
+                else:
+                    if target_device == "cuda" and not cuda_available:
+                        logger.error("❌ Config asked for CUDA but torch.cuda.is_available() is False!")
+                    logger.warning("⚠️ Model running on CPU (Slow Performance).")
+                
+                self.refresh_speakers(force=True)
+                
             except Exception as e:
                 logger.critical(f"🔥 Model init failed: {e}")
                 raise e
@@ -77,7 +93,28 @@ class TTSEngine:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    # _parse_ssml METODU KALDIRILDI -> ssml_handler kullanılıyor.
+    def _ensure_fallback_speaker(self):
+        """Speakers klasörü boşsa, basit bir SİNÜS DALGASI (Bip Sesi) oluşturur."""
+        if not os.path.exists(self.SPEAKERS_DIR):
+            os.makedirs(self.SPEAKERS_DIR)
+            
+        files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
+        if not files:
+            logger.warning("⚠️ No speakers found! Generating generic sine wave reference...")
+            fallback_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
+            try:
+                # DÜZELTME: Sessizlik (zeros) yerine Sinüs Dalgası
+                # XTTS sessizliği klonlayamaz, ama sabit bir tonu referans alabilir.
+                sample_rate = 24000
+                duration_sec = 2.0
+                t = torch.linspace(0, duration_sec, int(sample_rate * duration_sec))
+                # 220Hz frekansında yumuşak bir ton
+                waveform = torch.sin(2 * torch.pi * 220 * t).unsqueeze(0)
+                
+                torchaudio.save(fallback_path, waveform, sample_rate)
+                logger.info(f"✅ Fallback speaker created: {fallback_path}")
+            except Exception as e:
+                logger.error(f"❌ Failed to create fallback speaker: {e}")
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         text = normalizer.normalize(params.get("text", ""), params.get("language"))
@@ -100,15 +137,12 @@ class TTSEngine:
                 gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                 
                 if is_ssml:
-                    # YENİ: SSML Handler kullanımı
                     segments = ssml_handler.parse(text, params)
                     wav_chunks = []
                     
                     for segment in segments:
                         if segment['type'] == 'text':
-                            # Her segment için parametreleri override et
                             inf_params = segment['params']
-                            
                             out = self.model.inference(
                                 segment['content'], 
                                 inf_params.get("language"), 
@@ -121,9 +155,7 @@ class TTSEngine:
                                 speed=inf_params.get("speed", 1.0)
                             )
                             wav_chunks.append(torch.tensor(out['wav']))
-                            
                         elif segment['type'] == 'break':
-                            # 24000Hz örnekleme hızı varsayımı
                             wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
                             
                     full_wav = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
@@ -135,7 +167,7 @@ class TTSEngine:
                     )
                     full_wav = torch.tensor(out["wav"])
 
-                if settings.DEVICE == "cuda": 
+                if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                     full_wav = full_wav.cpu()
             finally:
                 self._cleanup_memory()
@@ -171,7 +203,7 @@ class TTSEngine:
                 )
 
                 for chunk in chunks:
-                    if settings.DEVICE == "cuda": 
+                    if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                         chunk = chunk.cpu()
                     wav_chunk_float = chunk.numpy()
                     np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
@@ -183,27 +215,44 @@ class TTSEngine:
             finally:
                 self._cleanup_memory()
 
-    def refresh_speakers(self):
+    def refresh_speakers(self, force=False):
+        now = time.time()
+        if not force and (now - self.last_cache_update < self.CACHE_TTL):
+            return {"status": "cached", "count": len(self.speakers_cache)}
+
         report = {"success": [], "failed": {}, "total_scanned": 0}
+        new_cache = []
+        
         if os.path.exists(self.SPEAKERS_DIR):
             files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
             report["total_scanned"] = len(files)
             for f in files:
                 name = os.path.splitext(os.path.basename(f))[0]
+                new_cache.append(name)
                 report["success"].append(name)
+        
+        self.speakers_cache = sorted(new_cache)
+        self.last_cache_update = now
+        logger.info(f"🔊 Speakers refreshed. Total: {len(self.speakers_cache)}")
+        
         return report
 
     def get_speakers(self):
-        if os.path.exists(self.SPEAKERS_DIR): 
-            return [os.path.splitext(os.path.basename(f))[0] for f in glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))]
-        return []
+        if not self.speakers_cache or (time.time() - self.last_cache_update > self.CACHE_TTL):
+            self.refresh_speakers()
+        return self.speakers_cache
 
     def _get_latents(self, speaker_idx, speaker_wavs):
         if speaker_wavs: 
             return self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
         
-        if not speaker_idx: 
-            raise ValueError("Speaker ID required")
+        if not speaker_idx:
+            speakers = self.get_speakers()
+            if speakers:
+                speaker_idx = speakers[0]
+            else:
+                self._ensure_fallback_speaker()
+                speaker_idx = "system_default"
         
         latent_file = os.path.join(self.LATENTS_DIR, f"{speaker_idx}.json")
         if os.path.exists(latent_file):
@@ -212,7 +261,7 @@ class TTSEngine:
                     data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
-                if settings.DEVICE == "cuda": 
+                if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                     gpt_cond_latent = gpt_cond_latent.cuda()
                     speaker_embedding = speaker_embedding.cuda()
                 return gpt_cond_latent, speaker_embedding
@@ -223,9 +272,11 @@ class TTSEngine:
         if not os.path.exists(wav_path): 
             files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
             wav_path = files[0] if files else None
-        if not wav_path: 
-            raise ValueError("No speakers found.")
         
+        if not wav_path:
+            self._ensure_fallback_speaker()
+            wav_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
+
         gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
         try:
             with open(latent_file, 'w') as f: 

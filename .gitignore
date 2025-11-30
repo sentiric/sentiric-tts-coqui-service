@@ -39,3 +39,4 @@ cache
 .venv_test
 tests/output
 tests/*.wav
+*.wav

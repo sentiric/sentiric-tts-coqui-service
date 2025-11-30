@@ -98,7 +98,8 @@ async def get_speakers():
 
 @router.post("/api/speakers/refresh")
 async def refresh_speakers_cache():
-    report = await asyncio.to_thread(tts_engine.refresh_speakers)
+    # Force parametresi ile cache'i bypass et ve diski tara
+    report = await asyncio.to_thread(tts_engine.refresh_speakers, force=True)
     return {"status": "ok", "data": report}
 
 @router.post("/api/tts")
@@ -116,7 +117,7 @@ async def generate_speech(request: TTSRequest):
             
             process_time = time.perf_counter() - start_time
             char_count = len(request.text)
-            audio_duration_sec = len(audio_bytes) / 48000 # 24k * 2 bytes
+            audio_duration_sec = len(audio_bytes) / 48000 
             rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
 
             logger.info("usage.recorded", extra={
@@ -162,9 +163,6 @@ async def generate_speech_clone(
     stream: bool = Form(False),
     output_format: str = Form("wav")
 ):
-    # ... (Clone fonksiyonu içeriği aynı kalacak, sadece sonu Response header eklemesi) ...
-    # Kısalık için burayı tekrarlamıyorum, önceki kodunuzdaki clone mantığı geçerlidir.
-    # Tek fark return kısmında X-VCA headerlarını eklemektir.
     if not text or not text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
@@ -238,43 +236,43 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
     if not request.input or not request.input.strip():
         raise HTTPException(status_code=422, detail="Input text cannot be empty.")
 
-    # 1. MEVCUT HOPARLÖRLERİ AL (Dinamik)
-    # Bu liste /app/speakers klasöründeki dosyaları anlık olarak tarar.
-    # Yani yeni bir dosya atıldığında restart gerekmeden burada görünür.
+    # 1. MEVCUT HOPARLÖRLERİ AL (Cached)
+    # Artık her istekte diske gitmiyor, önbellekten alıyor.
     available_speakers = tts_engine.get_speakers()
     
-    requested_voice = request.voice
+    # Küçük harfe çevirerek eşleştirme yap (Case-Insensitive)
+    available_speakers_lower = {s.lower(): s for s in available_speakers}
+    
+    requested_voice = request.voice.lower()
     target_speaker = ""
 
-    # MANTIK 1: Eğer kullanıcı Open WebUI'da direkt dosya adını yazdıysa (örn: "M_Deep_Damien")
-    # ve bu isim bizde varsa, direkt onu kullan.
-    if requested_voice in available_speakers:
-        target_speaker = requested_voice
-        logger.info(f"OpenAI TTS: Direct match found for '{requested_voice}'")
+    # MANTIK 1: Direkt Eşleşme (Örn: "M_Deep_Damien" -> "M_Deep_Damien")
+    if requested_voice in available_speakers_lower:
+        target_speaker = available_speakers_lower[requested_voice]
+        logger.info(f"OpenAI TTS: Direct match found for '{request.voice}' -> '{target_speaker}'")
     
-    # MANTIK 2: Eğer isim bizde yoksa (örn: "alloy"), haritalamaya bak.
+    # MANTIK 2: Haritalama (Örn: "alloy" -> "F_Narrator_Linda")
     else:
         voice_map = {
             "alloy": "F_Narrator_Linda",
             "echo": "M_News_Bill",
-            # "echo": "M_default",         # My Voice  
             "shimmer": "F_Calm_Ana",
             "onyx": "M_Deep_Damien",
             "nova": "F_Assistant_Judy",
             "fable": "M_Story_Telling",
-            
         }
         
-        # Haritada varsa onu al, yoksa listedeki İLK sesi al (Default Fallback)
-        mapped = voice_map.get(requested_voice)
+        mapped_key = voice_map.get(requested_voice)
         
-        if mapped and mapped in available_speakers:
-            target_speaker = mapped
-            logger.info(f"OpenAI TTS: Mapped '{requested_voice}' -> '{target_speaker}'")
+        # Haritalanan ses diskte var mı?
+        if mapped_key and mapped_key.lower() in available_speakers_lower:
+            target_speaker = available_speakers_lower[mapped_key.lower()]
+            logger.info(f"OpenAI TTS: Mapped '{request.voice}' -> '{target_speaker}'")
         else:
-            # Fallback: Haritada yoksa veya haritadaki dosya silinmişse
-            target_speaker = available_speakers[0] if available_speakers else "default"
-            logger.warning(f"OpenAI TTS: Voice '{requested_voice}' not found. Using fallback '{target_speaker}'")
+            # Fallback: Eğer haritalanan da yoksa, listenin ilkini al.
+            # get_speakers() boş dönerse engine içindeki fallback mekanizması devreye girer.
+            target_speaker = available_speakers[0] if available_speakers else "system_default"
+            logger.warning(f"OpenAI TTS: Voice '{request.voice}' not found. Using fallback '{target_speaker}'")
 
     # 2. FORMAT DÜZELTME
     output_fmt = request.response_format
@@ -286,9 +284,9 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         detected_lang, _ = langid.classify(request.input)
         if detected_lang == "zh": detected_lang = "zh-cn"
         if detected_lang not in SUPPORTED_LANGUAGES:
-            detected_lang = "en" # Desteklenmiyorsa İngilizce varsay
+            detected_lang = "en" 
     except:
-        detected_lang = "tr" # Hata olursa Türkçe varsay
+        detected_lang = "tr" 
 
     params = {
         "text": request.input,
@@ -317,18 +315,15 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
 async def list_models():
     """
     Open WebUI'ın model listesi olarak tüm hoparlörleri görmesini sağlar.
-    Böylece 'Model' dropdown'ında 'tts-1' yerine 'M_News_Bill' seçilebilir hale gelir.
+    Cache mekanizması sayesinde disk IO yapmaz.
     """
     speakers = tts_engine.get_speakers()
     
-    # Standart OpenAI modelleri
     models_data = [
         {"id": "tts-1", "object": "model", "created": 1234567890, "owned_by": "sentiric-tts"},
         {"id": "tts-1-hd", "object": "model", "created": 1234567890, "owned_by": "sentiric-tts"}
     ]
     
-    # Bizim hoparlörleri de model gibi ekle
-    # (Bazı UI'lar sesleri model listesinden seçtirir)
     for spk in speakers:
         models_data.append({
             "id": spk,
