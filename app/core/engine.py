@@ -49,9 +49,10 @@ class TTSEngine:
         if not self.model:
             logger.info("🚀 Initializing XTTS v2 Core Engine...")
             try:
+                # RTX Optimizasyonu
                 if torch.cuda.is_available():
                     torch.set_float32_matmul_precision("high")
-                    logger.info("⚡ RTX Ampere Optimization Enabled (Float32 Matmul Precision: High)")
+                    logger.info("⚡ RTX Ampere Optimization Enabled")
 
                 self._ensure_fallback_speaker()
 
@@ -79,17 +80,18 @@ class TTSEngine:
                 if target_device == "cuda" and cuda_available:
                     self.model.cuda()
                     
+                    # --- KRİTİK GÜNCELLEME: BFLOAT16 vs FLOAT16 ---
                     if settings.ENABLE_HALF_PRECISION:
-                        try:
-                            self.model.half() 
-                            logger.info("✅ Model converted to Half Precision (FP16) for Low VRAM usage.")
-                        except Exception as e:
-                            logger.error(f"❌ Failed to convert to FP16: {e}")
+                        # Ampere (RTX 30xx) ve üstü için BFLOAT16 (NaN önleyici)
+                        if torch.cuda.is_bf16_supported():
+                            self.model.bfloat16()
+                            logger.info("✅ Model converted to BFLOAT16 (Stable & Fast for RTX 3060).")
+                        else:
+                            self.model.half()
+                            logger.info("✅ Model converted to FLOAT16 (Standard Half Precision).")
                     
                     logger.info("✅ Model successfully moved to GPU (CUDA).")
                 else:
-                    if target_device == "cuda" and not cuda_available:
-                        logger.error("❌ Config asked for CUDA but torch.cuda.is_available() is False!")
                     logger.warning("⚠️ Model running on CPU (Slow Performance).")
                 
                 self.refresh_speakers(force=True)
@@ -127,7 +129,6 @@ class TTSEngine:
         if not text: return b""
         
         is_ssml = ssml_handler.is_ssml(text)
-        
         cache_key = None
         if not is_ssml and not speaker_wavs:
             cache_key = self._generate_cache_key({**params, "text": text})
@@ -140,14 +141,9 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Non-Stream: Autocast ile FP16/FP32 uyumunu sağla
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                # Inference Mode: Autocast'a gerek yok, modelin kendi tipini kullanacağız.
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
-                    
-                    # Girdiler zaten FP32 (Float) geliyor (GetLatents'ten), Autocast bunları halleder.
                     
                     if is_ssml:
                         segments = ssml_handler.parse(text, params)
@@ -179,7 +175,7 @@ class TTSEngine:
                         full_wav = torch.tensor(out["wav"])
 
                     if settings.DEVICE == "cuda": 
-                        full_wav = full_wav.float().cpu() # Autocast çıktısı half olabilir, float yap.
+                        full_wav = full_wav.float().cpu()
             finally:
                 self._cleanup_memory()
 
@@ -201,18 +197,10 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Streaming: Autocast Tekrar Devrede!
-                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
-                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
-
-                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
+                # Streaming Modu: BFLOAT16 veya FLOAT16 ile çalışır. Autocast KAPALI.
+                with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
-                    # Girdiler FP32 (Float) olarak kalıyor. Autocast model (Half) ile girdiyi (Float) barıştıracak.
-                    if settings.DEVICE == "cuda":
-                        gpt_cond_latent = gpt_cond_latent.float()
-                        speaker_embedding = speaker_embedding.float()
-
                     chunks = self.model.inference_stream(
                         text, lang, gpt_cond_latent, speaker_embedding,
                         temperature=params.get("temperature", 0.75), repetition_penalty=params.get("repetition_penalty", 2.0),
@@ -274,10 +262,21 @@ class TTSEngine:
                 with open(latent_file, 'r') as f: data = json.load(f)
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
+                
+                # --- DINAMIK TIP DÖNÜŞÜMÜ ---
+                # Model hangi tipteyse (fp32, fp16, bf16), girdiyi de ona çevir.
                 if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
-                    # SADECE CUDA'YA AT, TİP DÖNÜŞÜMÜ YAPMA (Autocast halledecek)
-                    gpt_cond_latent = gpt_cond_latent.cuda()
-                    speaker_embedding = speaker_embedding.cuda()
+                    gpt_cond_latent = gpt_cond_latent.to(self.model.device, dtype=self.model.gpt_cond_latent.dtype if hasattr(self.model, 'gpt_cond_latent') else None)
+                    speaker_embedding = speaker_embedding.to(self.model.device, dtype=self.model.speaker_embedding.dtype if hasattr(self.model, 'speaker_embedding') else None)
+                    
+                    # Fallback: Eğer attribute yoksa manuel kontrol
+                    if self.model.gpt_cond_latent.dtype == torch.bfloat16:
+                         gpt_cond_latent = gpt_cond_latent.bfloat16()
+                         speaker_embedding = speaker_embedding.bfloat16()
+                    elif self.model.gpt_cond_latent.dtype == torch.float16:
+                         gpt_cond_latent = gpt_cond_latent.half()
+                         speaker_embedding = speaker_embedding.half()
+
                 return gpt_cond_latent, speaker_embedding
             except: pass
             
@@ -290,6 +289,16 @@ class TTSEngine:
             wav_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
 
         gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
+        
+        # --- İLK YÜKLEME TİP DÖNÜŞÜMÜ ---
+        if settings.DEVICE == "cuda":
+             if torch.cuda.is_bf16_supported() and settings.ENABLE_HALF_PRECISION:
+                 gpt_cond_latent = gpt_cond_latent.bfloat16()
+                 speaker_embedding = speaker_embedding.bfloat16()
+             elif settings.ENABLE_HALF_PRECISION:
+                 gpt_cond_latent = gpt_cond_latent.half()
+                 speaker_embedding = speaker_embedding.half()
+
         try:
             with open(latent_file, 'w') as f: 
                 json.dump({"gpt_cond_latent": gpt_cond_latent.float().cpu().tolist(), "speaker_embedding": speaker_embedding.float().cpu().tolist()}, f)
