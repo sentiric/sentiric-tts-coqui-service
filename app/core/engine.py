@@ -140,13 +140,15 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                with torch.inference_mode():
+                # Non-Stream: Autocast ile FP16/FP32 uyumunu sağla
+                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
+                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
+
+                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
-                    if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
-                        gpt_cond_latent = gpt_cond_latent.half()
-                        speaker_embedding = speaker_embedding.half()
-
+                    # Girdiler zaten FP32 (Float) geliyor (GetLatents'ten), Autocast bunları halleder.
+                    
                     if is_ssml:
                         segments = ssml_handler.parse(text, params)
                         wav_chunks = []
@@ -177,7 +179,7 @@ class TTSEngine:
                         full_wav = torch.tensor(out["wav"])
 
                     if settings.DEVICE == "cuda": 
-                        full_wav = full_wav.cpu()
+                        full_wav = full_wav.float().cpu() # Autocast çıktısı half olabilir, float yap.
             finally:
                 self._cleanup_memory()
 
@@ -188,8 +190,7 @@ class TTSEngine:
             params.get("sample_rate", 24000),
             add_silence=True 
         )
-        if not is_ssml and cache_key: 
-            self._save_cache(cache_key, final_audio)
+        if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
@@ -200,9 +201,14 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                with torch.inference_mode():
+                # Streaming: Autocast Tekrar Devrede!
+                device_type = 'cuda' if settings.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
+                use_amp = settings.ENABLE_HALF_PRECISION and device_type == 'cuda'
+
+                with torch.inference_mode(), torch.autocast(device_type=device_type, dtype=torch.float16, enabled=use_amp):
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
+                    # Girdiler FP32 (Float) olarak kalıyor. Autocast model (Half) ile girdiyi (Float) barıştıracak.
                     if settings.DEVICE == "cuda":
                         gpt_cond_latent = gpt_cond_latent.float()
                         speaker_embedding = speaker_embedding.float()
@@ -216,7 +222,7 @@ class TTSEngine:
 
                     for chunk in chunks:
                         if settings.DEVICE == "cuda": 
-                            chunk = chunk.cpu()
+                            chunk = chunk.float().cpu()
                         
                         wav_chunk_float = chunk.numpy()
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
@@ -269,6 +275,7 @@ class TTSEngine:
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
                 if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
+                    # SADECE CUDA'YA AT, TİP DÖNÜŞÜMÜ YAPMA (Autocast halledecek)
                     gpt_cond_latent = gpt_cond_latent.cuda()
                     speaker_embedding = speaker_embedding.cuda()
                 return gpt_cond_latent, speaker_embedding
