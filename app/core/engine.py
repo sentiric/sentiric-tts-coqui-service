@@ -140,7 +140,6 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Non-Stream modunda Half Precision Girdileri Kullan
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
@@ -189,7 +188,8 @@ class TTSEngine:
             params.get("sample_rate", 24000),
             add_silence=True 
         )
-        if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
+        if not is_ssml and cache_key: 
+            self._save_cache(cache_key, final_audio)
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
@@ -200,14 +200,9 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # STRATEJİ DEĞİŞİKLİĞİ: Streaming için Tensörleri Float (FP32) bırak!
-                # Model Half olsa bile, inference_stream içindeki operasyonlar Float bekliyor olabilir.
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
-                    # BURADA .half() YAPMIYORUZ! Float32 olarak gönderiyoruz.
-                    # Eğer hata "Expected Half but found Float" ise, o zaman .half() yaparız.
-                    # Şu anki hata "Expected Float but found Half" idi, yani Float istiyor.
                     if settings.DEVICE == "cuda":
                         gpt_cond_latent = gpt_cond_latent.float()
                         speaker_embedding = speaker_embedding.float()
@@ -303,13 +298,17 @@ class TTSEngine:
         if not key: return None
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
-            try: with open(path, "rb") as f: return f.read()
+            try: 
+                with open(path, "rb") as f: 
+                    return f.read()
             except: return None
         return None
 
     def _save_cache(self, key, data):
         if not key: return
-        try: with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: f.write(data)
+        try: 
+            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: 
+                f.write(data)
         except: pass
 
 tts_engine = TTSEngine()
