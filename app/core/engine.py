@@ -49,8 +49,6 @@ class TTSEngine:
         if not self.model:
             logger.info("🚀 Initializing XTTS v2 Core Engine...")
             try:
-                # RTX 3000 Serisi (Ampere) için Tensör Çekirdek Optimizasyonu
-                # Bu, kaliteyi bozmadan matris işlemlerini hızlandırır.
                 if torch.cuda.is_available():
                     torch.set_float32_matmul_precision("high")
                     logger.info("⚡ RTX Ampere Optimization Enabled (Float32 Matmul Precision: High)")
@@ -73,7 +71,6 @@ class TTSEngine:
                     use_deepspeed=settings.ENABLE_DEEPSPEED,
                 )
                 
-                # --- DONANIM VE OPTİMİZASYON AYARLARI ---
                 target_device = settings.DEVICE
                 cuda_available = torch.cuda.is_available()
                 
@@ -82,11 +79,9 @@ class TTSEngine:
                 if target_device == "cuda" and cuda_available:
                     self.model.cuda()
                     
-                    # [KRİTİK GÜNCELLEME] HALF PRECISION (FP16)
-                    # VRAM kullanımını ~%40 düşürür ve RTX kartlarda 2x hız sağlar.
                     if settings.ENABLE_HALF_PRECISION:
                         try:
-                            self.model.half() # Modeli FP16'ya çevir
+                            self.model.half() 
                             logger.info("✅ Model converted to Half Precision (FP16) for Low VRAM usage.")
                         except Exception as e:
                             logger.error(f"❌ Failed to convert to FP16: {e}")
@@ -104,14 +99,12 @@ class TTSEngine:
                 raise e
 
     def _cleanup_memory(self):
-        """Bellek temizliği: Özellikle Low Resource Mode açıksa agresif davran."""
         if settings.LOW_RESOURCE_MODE:
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
     def _ensure_fallback_speaker(self):
-        """Speakers klasörü boşsa, basit bir SİNÜS DALGASI (Bip Sesi) oluşturur."""
         if not os.path.exists(self.SPEAKERS_DIR):
             os.makedirs(self.SPEAKERS_DIR)
             
@@ -147,10 +140,14 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # torch.inference_mode() -> no_grad()'dan daha hızlıdır
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
                     
+                    # FP16 Kontrolü (Non-Stream)
+                    if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
+                        gpt_cond_latent = gpt_cond_latent.half()
+                        speaker_embedding = speaker_embedding.half()
+
                     if is_ssml:
                         segments = ssml_handler.parse(text, params)
                         wav_chunks = []
@@ -182,7 +179,7 @@ class TTSEngine:
                         )
                         full_wav = torch.tensor(out["wav"])
 
-                    if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
+                    if settings.DEVICE == "cuda": 
                         full_wav = full_wav.cpu()
             finally:
                 self._cleanup_memory()
@@ -209,9 +206,14 @@ class TTSEngine:
         
         with self._thread_lock:
             try:
-                # Streaming için de inference_mode kullanıyoruz
                 with torch.inference_mode():
                     gpt_cond_latent, speaker_embedding = self._get_latents(params.get("speaker_idx"), speaker_wavs)
+                    
+                    # DÜZELTME (FIX): Streaming için de FP16 dönüşümü eklendi!
+                    if settings.ENABLE_HALF_PRECISION and settings.DEVICE == "cuda":
+                        gpt_cond_latent = gpt_cond_latent.half()
+                        speaker_embedding = speaker_embedding.half()
+
                     chunks = self.model.inference_stream(
                         text, lang, gpt_cond_latent, speaker_embedding,
                         temperature=params.get("temperature", 0.75), repetition_penalty=params.get("repetition_penalty", 2.0),
@@ -220,7 +222,7 @@ class TTSEngine:
                     )
 
                     for chunk in chunks:
-                        if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
+                        if settings.DEVICE == "cuda": 
                             chunk = chunk.cpu()
                         wav_chunk_float = chunk.numpy()
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
@@ -279,11 +281,6 @@ class TTSEngine:
                 gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
                 speaker_embedding = torch.tensor(data["speaker_embedding"])
                 
-                # Latent vektörleri de FP16'ya çeviriyoruz ki modelle uyuşsun
-                if settings.ENABLE_HALF_PRECISION:
-                    gpt_cond_latent = gpt_cond_latent.half()
-                    speaker_embedding = speaker_embedding.half()
-                    
                 if settings.DEVICE == "cuda" and torch.cuda.is_available(): 
                     gpt_cond_latent = gpt_cond_latent.cuda()
                     speaker_embedding = speaker_embedding.cuda()
@@ -302,13 +299,8 @@ class TTSEngine:
 
         gpt_cond_latent, speaker_embedding = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
         
-        # Latent vektörleri FP16'ya çevir
-        if settings.ENABLE_HALF_PRECISION:
-            gpt_cond_latent = gpt_cond_latent.half()
-            speaker_embedding = speaker_embedding.half()
-
         try:
-            # Kaydederken float listesi olarak kaydediyoruz (JSON uyumluluğu için)
+            # Kaydederken float (FP32) olarak kaydediyoruz
             with open(latent_file, 'w') as f: 
                 json.dump({"gpt_cond_latent": gpt_cond_latent.float().cpu().tolist(), "speaker_embedding": speaker_embedding.float().cpu().tolist()}, f)
         except: 
