@@ -1,5 +1,5 @@
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Response
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from typing import List
 import asyncio
 import os
@@ -22,7 +22,7 @@ UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
-# XTTS v2'nin desteklediği diller
+# XTTS v2'nin desteklediği diller (Referans için)
 SUPPORTED_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]
 
 # --- YARDIMCI FONKSİYONLAR ---
@@ -32,11 +32,11 @@ async def cleanup_files(file_paths: List[str]):
         try:
             if os.path.exists(path):
                 await asyncio.to_thread(os.remove, path)
-                logger.info(f"Cleaned up: {path}")
+                logger.debug(f"Cleaned up: {path}")
         except Exception as e:
             logger.warning(f"Cleanup failed for {path}: {e}")
 
-# --- STANDART ENDPOINTLER ---
+# --- SYSTEM & CONFIG ENDPOINTS ---
 
 @router.get("/favicon.ico", include_in_schema=False)
 async def favicon():
@@ -44,7 +44,44 @@ async def favicon():
     
 @router.get("/health")
 async def health_check():
-    return {"status": "ok", "device": settings.DEVICE, "model_loaded": tts_engine.model is not None}
+    """K8s ve Docker healthcheck için durum raporu"""
+    return {
+        "status": "ok", 
+        "device": settings.DEVICE, 
+        "model_loaded": tts_engine.model is not None,
+        "version": settings.APP_VERSION
+    }
+
+@router.get("/api/config")
+async def get_public_config():
+    """
+    UI'ın (Frontend) başlangıç değerlerini ve limitlerini ayarlaması için
+    backend konfigürasyonunu döner.
+    """
+    return {
+        "app_name": settings.APP_NAME,
+        "version": settings.APP_VERSION,
+        "defaults": {
+            "temperature": settings.DEFAULT_TEMPERATURE,
+            "speed": settings.DEFAULT_SPEED,
+            "top_k": settings.DEFAULT_TOP_K,
+            "top_p": settings.DEFAULT_TOP_P,
+            "repetition_penalty": settings.DEFAULT_REPETITION_PENALTY,
+            "language": settings.DEFAULT_LANGUAGE,
+            "speaker": settings.DEFAULT_SPEAKER
+        },
+        "limits": {
+            "max_text_len": 5000,
+            "supported_formats": ["wav", "mp3", "opus", "pcm"],
+            "sample_rates": [24000, 16000, 8000]
+        },
+        "system": {
+            "streaming_enabled": settings.ENABLE_STREAMING,
+            "device": settings.DEVICE
+        }
+    }
+
+# --- HISTORY ENDPOINTS ---
 
 @router.get("/api/history")
 async def get_history():
@@ -62,7 +99,6 @@ async def get_history_audio(filename: str):
 async def delete_all_history():
     try:
         history_manager.clear_all()
-        # ... (Temizlik kodları aynı) ...
         async def remove_safe(path):
             try:
                 await asyncio.to_thread(os.remove, path)
@@ -72,8 +108,7 @@ async def delete_all_history():
         tasks = []
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db": tasks.append(remove_safe(f))
-        for f in glob.glob(os.path.join(CACHE_DIR, "*.bin")): tasks.append(remove_safe(f))
-        for f in glob.glob(os.path.join(CACHE_DIR, "latents", "*.json")): tasks.append(remove_safe(f))
+        # Cache temizliği opsiyonel, şimdilik history odaklı
         results = await asyncio.gather(*tasks)
         return {"status": "cleared", "files_deleted": sum(results)}
     except Exception as e:
@@ -91,6 +126,8 @@ async def delete_history_entry(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- SPEAKER MANAGEMENT ---
+
 @router.get("/api/speakers")
 async def get_speakers():
     speakers = tts_engine.get_speakers()
@@ -102,6 +139,8 @@ async def refresh_speakers_cache():
     report = await asyncio.to_thread(tts_engine.refresh_speakers, force=True)
     return {"status": "ok", "data": report}
 
+# --- MAIN TTS ENDPOINT ---
+
 @router.post("/api/tts")
 async def generate_speech(request: TTSRequest):
     if not request.text or not request.text.strip():
@@ -109,15 +148,23 @@ async def generate_speech(request: TTSRequest):
     
     start_time = time.perf_counter()
     try:
+        # Pydantic modeli zaten config defaultlarını içeriyor
         params = request.model_dump()
+        
         if request.stream:
-            return StreamingResponse(tts_engine.synthesize_stream(params), media_type="application/octet-stream")
+            return StreamingResponse(
+                tts_engine.synthesize_stream(params), 
+                media_type="application/octet-stream"
+            )
         else:
+            # Bloklayıcı işlemi thread pool'da çalıştır
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             
+            # Metrik hesaplama
             process_time = time.perf_counter() - start_time
             char_count = len(request.text)
-            audio_duration_sec = len(audio_bytes) / 48000 
+            # 16-bit PCM = 2 bytes per sample
+            audio_duration_sec = len(audio_bytes) / (request.sample_rate * 2) 
             rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
 
             logger.info("usage.recorded", extra={
@@ -126,20 +173,28 @@ async def generate_speech(request: TTSRequest):
                 "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "standard"
             })
 
+            # Dosya uzantısı ve MIME type belirleme
             ext = "wav"
-            if request.output_format == "mp3": ext = "mp3"
-            elif request.output_format == "opus": ext = "opus"
+            media_type = "audio/wav"
             
+            if request.output_format == "mp3": 
+                ext = "mp3"
+                media_type = "audio/mpeg"
+            elif request.output_format == "opus": 
+                ext = "opus"
+                media_type = "audio/ogg"
+            elif request.output_format == "pcm":
+                ext = "pcm"
+                media_type = "application/octet-stream"
+            
+            # History'e kaydet
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
-            media_type = "audio/wav"
-            if ext == "mp3": media_type = "audio/mpeg"
-            elif ext == "opus": media_type = "audio/ogg"
-            
+            # Response headerları (VCA için kritik)
             final_response = Response(content=audio_bytes, media_type=media_type)
             final_response.headers["X-VCA-Chars"] = str(char_count)
             final_response.headers["X-VCA-Time"] =f"{process_time:.3f}"
@@ -150,18 +205,21 @@ async def generate_speech(request: TTSRequest):
         logger.error(f"TTS Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# --- VOICE CLONING ENDPOINT ---
+
 @router.post("/api/tts/clone")
 async def generate_speech_clone(
     text: str = Form(...),
-    language: str = Form("en"),
+    language: str = Form(settings.DEFAULT_LANGUAGE),
     files: List[UploadFile] = File(...),
-    temperature: float = Form(0.75),
-    speed: float = Form(1.0),
-    top_k: int = Form(50),
-    top_p: float = Form(0.85),
-    repetition_penalty: float = Form(2.0),
+    # Config'den gelen varsayılan değerler
+    temperature: float = Form(settings.DEFAULT_TEMPERATURE),
+    speed: float = Form(settings.DEFAULT_SPEED),
+    top_k: int = Form(settings.DEFAULT_TOP_K),
+    top_p: float = Form(settings.DEFAULT_TOP_P),
+    repetition_penalty: float = Form(settings.DEFAULT_REPETITION_PENALTY),
     stream: bool = Form(False),
-    output_format: str = Form("wav")
+    output_format: str = Form(settings.DEFAULT_OUTPUT_FORMAT)
 ):
     if not text or not text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
@@ -169,6 +227,7 @@ async def generate_speech_clone(
     start_time = time.perf_counter()
     saved_files = []
     try:
+        # Yüklenen dosyaları geçici olarak kaydet
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
@@ -181,7 +240,9 @@ async def generate_speech_clone(
         params = {
             "text": text, "language": language, "temperature": temperature,
             "speed": speed, "top_k": top_k, "top_p": top_p,
-            "repetition_penalty": repetition_penalty, "output_format": output_format, "speaker_idx": None
+            "repetition_penalty": repetition_penalty, "output_format": output_format, 
+            "speaker_idx": None, # Clone modunda speaker_idx kullanılmaz, wav dosyaları kullanılır
+            "sample_rate": 24000 # Varsayılan
         }
         
         if stream:
@@ -207,7 +268,10 @@ async def generate_speech_clone(
                 "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "clone"
             })
             
-            ext = output_format if output_format != "opus" else "opus"
+            # Format ve History
+            ext = output_format if output_format != "pcm" else "wav"
+            if ext == "opus": ext = "ogg"
+            
             filename = f"clone_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
@@ -215,7 +279,7 @@ async def generate_speech_clone(
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
             
             media_type = "audio/wav"
-            if ext == "mp3": media_type = "audio/mpeg"
+            if output_format == "mp3": media_type = "audio/mpeg"
             
             final_response = Response(content=audio_bytes, media_type=media_type)
             final_response.headers["X-VCA-Chars"] = str(char_count)
@@ -229,7 +293,7 @@ async def generate_speech_clone(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# --- OPENAI UYUMLU AKILLI ENDPOINTLER ---
+# --- OPENAI COMPATIBLE ENDPOINTS (Open WebUI vb. için) ---
 
 @router.post("/v1/audio/speech")
 async def openai_speech_endpoint(request: OpenAISpeechRequest):
@@ -237,22 +301,17 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         raise HTTPException(status_code=422, detail="Input text cannot be empty.")
 
     # 1. MEVCUT HOPARLÖRLERİ AL (Cached)
-    # Artık her istekte diske gitmiyor, önbellekten alıyor.
     available_speakers = tts_engine.get_speakers()
-    
-    # Küçük harfe çevirerek eşleştirme yap (Case-Insensitive)
     available_speakers_lower = {s.lower(): s for s in available_speakers}
     
     requested_voice = request.voice.lower()
     target_speaker = ""
 
-    # MANTIK 1: Direkt Eşleşme (Örn: "M_Deep_Damien" -> "M_Deep_Damien")
+    # Ses Eşleştirme Mantığı
     if requested_voice in available_speakers_lower:
         target_speaker = available_speakers_lower[requested_voice]
-        logger.info(f"OpenAI TTS: Direct match found for '{request.voice}' -> '{target_speaker}'")
-    
-    # MANTIK 2: Haritalama (Örn: "alloy" -> "F_Narrator_Linda")
     else:
+        # OpenAI ses isimlerini eşle
         voice_map = {
             "alloy": "F_Narrator_Linda",
             "echo": "M_News_Bill",
@@ -261,38 +320,35 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
             "nova": "F_Assistant_Judy",
             "fable": "M_Story_Telling",
         }
-        
         mapped_key = voice_map.get(requested_voice)
         
-        # Haritalanan ses diskte var mı?
         if mapped_key and mapped_key.lower() in available_speakers_lower:
             target_speaker = available_speakers_lower[mapped_key.lower()]
-            logger.info(f"OpenAI TTS: Mapped '{request.voice}' -> '{target_speaker}'")
         else:
-            # Fallback: Eğer haritalanan da yoksa, listenin ilkini al.
-            # get_speakers() boş dönerse engine içindeki fallback mekanizması devreye girer.
-            target_speaker = available_speakers[0] if available_speakers else "system_default"
-            logger.warning(f"OpenAI TTS: Voice '{request.voice}' not found. Using fallback '{target_speaker}'")
+            # Fallback: Config'den gelen varsayılan ses
+            target_speaker = settings.DEFAULT_SPEAKER
+            if target_speaker not in available_speakers:
+                 target_speaker = available_speakers[0] if available_speakers else "system_default"
 
-    # 2. FORMAT DÜZELTME
+    # Format Düzeltme
     output_fmt = request.response_format
     if output_fmt == "aac": output_fmt = "mp3"
     if output_fmt == "flac": output_fmt = "wav"
 
-    # 3. OTOMATİK DİL ALGILAMA (LangID)
+    # Dil Algılama (Fallback to Config Default)
     try:
         detected_lang, _ = langid.classify(request.input)
         if detected_lang == "zh": detected_lang = "zh-cn"
         if detected_lang not in SUPPORTED_LANGUAGES:
-            detected_lang = "en" 
+            detected_lang = settings.DEFAULT_LANGUAGE 
     except:
-        detected_lang = "tr" 
+        detected_lang = settings.DEFAULT_LANGUAGE
 
     params = {
         "text": request.input,
         "language": detected_lang,
         "speaker_idx": target_speaker,
-        "temperature": 0.75,
+        "temperature": settings.DEFAULT_TEMPERATURE, # Varsayılan
         "speed": request.speed,
         "output_format": output_fmt,
         "stream": False 
