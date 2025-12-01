@@ -1,7 +1,21 @@
 class API {
+    static async getConfig() {
+        try {
+            const response = await fetch('/api/config');
+            if (!response.ok) throw new Error(`Config fetch failed: ${response.statusText}`);
+            return await response.json();
+        } catch (e) {
+            console.error("Configuration could not be loaded:", e);
+            // Fallback config (Acil durumlar için)
+            return null;
+        }
+    }
+
     static async getHealth() {
-        const response = await fetch('/health');
-        return await response.json();
+        try {
+            const response = await fetch('/health');
+            return await response.json();
+        } catch { return { status: "down" }; }
     }
 
     static async getHistory() {
@@ -38,8 +52,8 @@ class API {
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(errorText);
+            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(errorData.detail || "TTS Generation Failed");
         }
 
         this._dispatchVCA(response.headers);
@@ -47,7 +61,6 @@ class API {
     }
 
     static async generateClone(formData, signal) {
-        // ... (Aynı kalıyor) ...
         const response = await fetch('/api/tts/clone', {
             method: 'POST',
             body: formData,
@@ -55,30 +68,24 @@ class API {
         });
 
         if (!response.ok) {
-            const errorText = await response.text();
-            throw new Error(errorText);
+            const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+            throw new Error(errorData.detail || "Voice Cloning Failed");
         }
 
         this._dispatchVCA(response.headers);
         return response;
     }
 
-    // Özel Yardımcı: VCA Olayını Tetikle
     static _dispatchVCA(headers) {
         const charCount = headers.get("X-VCA-Chars");
         const time = headers.get("X-VCA-Time");
         const rtf = headers.get("X-VCA-RTF");
-
-        // DEBUG LOG (Konsolu kontrol et)
-        console.log("📊 VCA Headers:", { charCount, time, rtf });
 
         if (time) {
             const event = new CustomEvent('vca-update', { 
                 detail: { chars: charCount, time: time, rtf: rtf } 
             });
             document.dispatchEvent(event);
-        } else {
-            console.warn("⚠️ VCA Headers not found! Check Backend CORS settings.");
         }
     }
 }

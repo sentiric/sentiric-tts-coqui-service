@@ -1,6 +1,4 @@
-const SOURCE_SAMPLE_RATE = 24000;
-
-// Global değişkenleri window altına alarak scope hatalarını engelliyoruz
+// Global Audio Context
 window._audioContext = null;
 window._mediaRecorder = null;
 let analyser = null;
@@ -30,12 +28,15 @@ function checkIfPlaybackFinished() {
     }
 }
 
-async function playChunk(float32Array, serverSampleRate = 24000) {
+// sampleRate artık parametre olarak geliyor
+async function playChunk(float32Array, sampleRate) {
     initAudioContext();
     if (window.isStopRequested) return;
 
     const ctx = window._audioContext;
-    const buffer = ctx.createBuffer(1, float32Array.length, serverSampleRate);
+    
+    // Dinamik sample rate kullanımı
+    const buffer = ctx.createBuffer(1, float32Array.length, sampleRate || 24000);
     buffer.getChannelData(0).set(float32Array);
     
     const source = ctx.createBufferSource();
@@ -44,10 +45,7 @@ async function playChunk(float32Array, serverSampleRate = 24000) {
     analyser.connect(ctx.destination);
     
     const currentTime = ctx.currentTime;
-
-    if (nextStartTime < currentTime) {
-        nextStartTime = currentTime;
-    }
+    if (nextStartTime < currentTime) nextStartTime = currentTime;
 
     source.start(nextStartTime);
     sourceNodes.push(source);
@@ -70,25 +68,14 @@ function resetAudioState() {
     setTimeout(() => { window.isStopRequested = false; }, 200);
 }
 
-function convertInt16ToFloat32(int16Data) {
-    const float32 = new Float32Array(int16Data.length);
-    for (let i = 0; i < int16Data.length; i++) {
-        float32[i] = int16Data[i] >= 0 ? int16Data[i] / 32767 : int16Data[i] / 32768;
-    }
-    return float32;
-}
-
+// Visualizer Logic
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
     const ctx = canvas.getContext('2d');
     
-    function resize() { 
-        canvas.width = canvas.offsetWidth; 
-        canvas.height = canvas.offsetHeight; 
-    }
-    window.addEventListener('resize', resize); 
-    resize();
+    function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; }
+    window.addEventListener('resize', resize); resize();
     
     function draw() {
         requestAnimationFrame(draw);
@@ -111,46 +98,33 @@ function initVisualizer() {
     draw();
 }
 
-// --- MİKROFON İŞLEMLERİ (Hata Düzeltmesi) ---
-
+// Mic Handlers
 async function startRecording() {
-    if (!navigator.mediaDevices) return alert("Mic denied");
+    if (!navigator.mediaDevices) return UI.showToast("Mic denied", "error");
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         window._mediaRecorder = new MediaRecorder(stream);
-        
         let audioChunks = [];
         
         window._mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
         window._mediaRecorder.onstop = () => {
             window.recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
-            if(window.onRecordingComplete) window.onRecordingComplete();
+            if(window.Controllers && window.Controllers.handleRecordingComplete) 
+                window.Controllers.handleRecordingComplete();
         };
         
         window._mediaRecorder.start();
-        if(window.toggleMicUI) window.toggleMicUI(true);
+        if(UI && UI.showRecordingState) UI.showRecordingState(true);
         
-    } catch(e) { 
-        alert("Mic Error: " + e.message); 
-    }
+    } catch(e) { UI.showToast("Mic Error: " + e.message, "error"); }
 }
 
 function stopRecording() {
-    // DEFANSİF KOD: Değişken tanımlı mı kontrol et
-    if (typeof window._mediaRecorder !== 'undefined' && 
-        window._mediaRecorder && 
-        window._mediaRecorder.state !== 'inactive') {
-        
+    if (window._mediaRecorder && window._mediaRecorder.state !== 'inactive') {
         window._mediaRecorder.stop();
-        
-        // Stream'i de kapat (Mic ışığı sönsün)
         window._mediaRecorder.stream.getTracks().forEach(track => track.stop());
-        
-        if(window.toggleMicUI) window.toggleMicUI(false);
+        if(UI && UI.showRecordingState) UI.showRecordingState(false);
     }
 }
 
-function clearRecordingData() { 
-    window.recordedBlob = null; 
-    window._mediaRecorder = null;
-}
+function clearRecordingData() { window.recordedBlob = null; window._mediaRecorder = null; }

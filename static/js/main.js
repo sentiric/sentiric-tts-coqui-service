@@ -1,277 +1,219 @@
 /**
- * SENTIRIC XTTS PRO - MAIN CONTROLLER
- * Bu dosya uygulamanın mantıksal süreçlerini yönetir.
+ * SENTIRIC XTTS PRO - MAIN CONTROLLER v1.2
  */
 
-// Global Durum Yönetimi
 const State = {
     isPlaying: false,
-    abortController: null
+    abortController: null,
+    config: null // Backend konfigürasyonu burada saklanır
 };
 
-// --- DENETLEYİCİLER (CONTROLLERS) ---
 const Controllers = {
     
-    /**
-     * Sunucudan hoparlör listesini çeker ve UI'a gönderir.
-     */
+    async boot() {
+        UI.setBootState(true, "Fetching Configuration...");
+        try {
+            // 1. Config'i Al
+            State.config = await API.getConfig();
+            if (!State.config) throw new Error("Config unreachable");
+            
+            // 2. UI'ı Config ile Başlat
+            UI.initFromConfig(State.config);
+            
+            // 3. Hoparlörleri Yükle
+            UI.setBootState(true, "Loading Voice Models...");
+            await this.loadSpeakers();
+            
+            // 4. Geçmişi Yükle
+            await this.loadHistory();
+            
+            // 5. Audio Context Hazırla
+            if (window.initAudioContext) window.initAudioContext();
+
+            // HAZIR
+            UI.setBootState(false);
+            UI.showToast("System Ready", "success");
+
+        } catch (e) {
+            console.error("Boot Error:", e);
+            UI.setBootState(true, "Connection Failed. Retrying...");
+            setTimeout(() => this.boot(), 3000); // Auto retry
+        }
+    },
+
     async loadSpeakers() {
         try {
             const data = await API.getSpeakers();
             UI.populateSpeakers(data);
         } catch (e) {
-            console.error("Speakers loading failed:", e);
+            UI.showToast("Speaker list failed", "error");
         }
     },
 
-    /**
-     * Geçmiş kayıtlarını çeker ve UI'a gönderir.
-     */
     async loadHistory() {
-        const list = document.getElementById('historyList');
-        if (list) list.innerHTML = '<div class="text-center text-[10px] text-gray-600 mt-10">Loading...</div>';
         try {
             const data = await API.getHistory();
             UI.renderHistory(data);
-        } catch (e) {
-            console.error("History loading failed:", e);
-        }
+        } catch (e) { console.error(e); }
     },
 
-    /**
-     * Sunucudaki hoparlör dosya sistemini yeniden tarar.
-     */
     async rescanSpeakers() {
-        if (!confirm("This will scan the server disk for new .wav files. Continue?")) return;
+        UI.setStatus("SCANNING...");
         try {
             const res = await API.refreshSpeakers();
-            alert(res.message);
+            UI.showToast(`Found ${res.data.total_scanned} files`, "success");
             await this.loadSpeakers();
         } catch (e) {
-            alert("Error: " + e.message);
+            UI.showToast(e.message, "error");
+        } finally {
+            UI.setStatus("READY");
         }
     },
 
-    /**
-     * Tüm geçmişi ve önbelleği temizler.
-     */
     async clearAllHistory() {
-        if (!confirm('WARNING: This will delete ALL history and cache permanently.')) return;
+        if (!confirm('Delete all history?')) return;
         try {
             const res = await API.deleteAllHistory();
-            alert(`Cleanup Complete. Deleted Files: ${res.files_deleted}`);
+            UI.showToast(`Deleted ${res.files_deleted} files`, "success");
             await this.loadHistory();
-        } catch (e) {
-            console.error(e);
-            alert("Cleanup failed.");
-        }
+        } catch (e) { UI.showToast("Delete failed", "error"); }
     },
 
-    /**
-     * Tekil bir kaydı siler.
-     */
     async deleteHistory(filename) {
-        if (!confirm('Delete this entry?')) return;
+        if (!confirm('Delete entry?')) return;
         try {
-            const success = await API.deleteHistory(filename);
-            if (success) {
-                // UI'dan anında kaldır (Optimistic UI)
-                const btn = document.querySelector(`button[onclick*='${filename}']`);
-                if (btn) {
-                    const group = btn.closest('.group');
-                    if (group) group.remove();
-                }
-            } else {
-                alert("Failed to delete.");
-            }
-        } catch (e) {
-            console.error(e);
-        }
+            await API.deleteHistory(filename);
+            // Optimistic update: Listeyi yeniden çekmek yerine DOM'dan sil
+            // Ancak basitlik için yeniden yüklüyoruz
+            await this.loadHistory(); 
+        } catch (e) { UI.showToast("Delete failed", "error"); }
     },
 
-    /**
-     * Geçmişten bir ses dosyasını oynatır.
-     */
     playHistory(filename) {
-        // Stream motorunu sıfırla ki çakışma olmasın
-        if (window.resetAudioState) window.resetAudioState();
-        
+        if (State.isPlaying) this.stopPlayback(true);
         const url = `/api/history/audio/${filename}`;
         const player = document.getElementById('classicPlayer');
         if (player) {
             player.src = url;
             player.play();
+            UI.setStatus("PLAYING HISTORY");
+            player.onended = () => UI.setStatus("READY");
         }
     },
 
-    /**
-     * Oynatmayı durdurur ve durumu sıfırlar.
-     * @param {boolean} isUserInitiated - Kullanıcı mı durdurdu yoksa şarkı mı bitti?
-     */
     stopPlayback(isUserInitiated = true) {
         if (isUserInitiated) {
-            console.log("Playback stopped by user.");
-            
-            // Fetch isteğini iptal et
             if (State.abortController) {
                 State.abortController.abort();
                 State.abortController = null;
             }
-            
-            // Audio Engine'i sıfırla
             if (window.resetAudioState) window.resetAudioState();
             
-            // HTML Player'ı durdur
             const player = document.getElementById('classicPlayer');
-            if (player) {
-                player.pause();
-                player.currentTime = 0;
-            }
-        } else {
-            console.log("Playback finished naturally.");
+            if (player) { player.pause(); player.currentTime = 0; }
+            
+            UI.showToast("Stopped", "info");
         }
-
         UI.setPlayingState(false);
         State.isPlaying = false;
-        UI.setStatus("READY");
     },
 
-    // --- SES KLONLAMA YÖNETİMİ ---
-
-    /**
-     * Dosya seçildiğinde çağrılır.
-     */
+    // --- CLONE HANDLERS ---
     handleFileSelect(event) {
         const file = event.target.files[0];
         if (file) {
-            // Önceki mikrofon kaydını temizle
             if (window.clearRecordingData) window.clearRecordingData();
-            
-            // UI'ı temizle ama INPUT'U SİLME (false parametresi kritik)
             UI.resetCloneUI(false);
-            
-            // Dosya ismini göster
             UI.updateFileName(file.name);
         }
     },
 
-    /**
-     * Mikrofon kaydı bittiğinde çağrılır.
-     */
     handleRecordingComplete() {
-        // Input'u temizleyebiliriz çünkü mikrofon kullanacağız (true)
         UI.resetCloneUI(true); 
         UI.showRecordingSuccess();
     },
 
-    /**
-     * X butonuna basıldığında her şeyi temizler.
-     */
     clearCloneData() {
         if (window.clearRecordingData) window.clearRecordingData();
         UI.resetCloneUI(true); 
     },
 
-    // --- ANA İŞLEM: SES ÜRETİMİ ---
+    // --- GENERATE ---
     async handleGenerate() {
-        // Eğer zaten çalıyorsa, butona basınca durdur
         if (State.isPlaying) {
             this.stopPlayback(true);
             return;
         }
 
-        // Validasyon
-        const textInput = document.getElementById('textInput');
-        const text = textInput ? textInput.value.trim() : "";
-        if (!text) return alert("Please enter text to synthesize.");
+        const text = document.getElementById('textInput').value.trim();
+        if (!text) return UI.showToast("Please enter text", "error");
 
         const isStream = document.getElementById('stream').checked;
-        if (text.startsWith('<speak>') && isStream) {
-            alert("SSML is not supported in Streaming mode.");
-            return;
-        }
 
-        // UI Başlatma
         UI.setPlayingState(true);
         State.isPlaying = true;
+        
+        if (window.resetAudioState) window.resetAudioState();
+
         const startTime = performance.now();
         let firstChunk = false;
-
-        // Audio Motorunu Hazırla
-        if (window.initAudioContext) window.initAudioContext();
-        if (window.resetAudioState) window.resetAudioState();
 
         try {
             State.abortController = new AbortController();
             
-            // Hangi moddayız? (Standart vs Clone)
             const modePanel = document.getElementById('panel-std');
             const isCloneMode = modePanel.classList.contains('hidden');
             
-            // Ortak parametreler
+            // Parametreleri UI'dan al (Varsayılanlar zaten UI'a config'den basılmıştı)
             const params = {
                 text: text,
                 language: document.getElementById('lang').value,
-                temperature: document.getElementById('temp').value,
-                speed: document.getElementById('speed').value,
-                top_k: document.getElementById('topk').value,
-                top_p: document.getElementById('topp').value,
-                repetition_penalty: document.getElementById('rep').value,
+                temperature: parseFloat(document.getElementById('temp').value),
+                speed: parseFloat(document.getElementById('speed').value),
+                top_k: parseInt(document.getElementById('topk').value),
+                top_p: parseFloat(document.getElementById('topp').value),
+                repetition_penalty: parseFloat(document.getElementById('rep').value),
                 stream: isStream,
                 output_format: document.getElementById('format').value,
-                sample_rate: parseInt(document.getElementById('sampleRate').value)
+                // Sample rate UI'da yoksa config default'u kullan
+                sample_rate: State.config ? State.config.defaults.sample_rate : 24000 
             };
 
             let response;
 
             if (!isCloneMode) {
-                // STANDART MOD
                 params.speaker_idx = document.getElementById('speaker').value;
                 response = await API.generateTTS(params, State.abortController.signal);
             } else {
-                // KLON MODU
                 const formData = new FormData();
-                
                 if (window.recordedBlob) {
                     formData.append('files', window.recordedBlob, 'recording.webm');
                 } else {
                     const fileInput = document.getElementById('ref_audio');
                     const file = fileInput ? fileInput.files[0] : null;
-                    if (!file) throw new Error("Please upload a file or record audio for cloning.");
+                    if (!file) throw new Error("Upload a file or record audio");
                     formData.append('files', file);
                 }
-                
-                // Parametreleri FormData'ya ekle
                 Object.entries(params).forEach(([key, value]) => formData.append(key, value));
-                
-                UI.setStatus("ANALYZING VOICE...");
+                UI.setStatus("CLONING...");
                 response = await API.generateClone(formData, State.abortController.signal);
             }
 
-            // --- STREAM İŞLEME (BUFFER ALIGNMENT FIX) ---
             if (isStream) {
                 const reader = response.body.getReader();
-                
-                // Artan byte'ları saklamak için tampon
                 let leftover = new Uint8Array(0);
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
 
-                    // 1. Yeni gelen veriyi önceki artanla birleştir
+                    // Buffer alignment fix (copy-paste from audio-core logic)
                     const combined = new Uint8Array(leftover.length + value.length);
                     combined.set(leftover);
                     combined.set(value, leftover.length);
-
-                    // 2. Çift sayı kontrolü (16-bit ses için zorunlu)
                     const remainder = combined.length % 2;
                     const usableLength = combined.length - remainder;
-
-                    // 3. Kullanılabilir kısmı al
                     const usableData = combined.subarray(0, usableLength);
-                    
-                    // 4. Artanı sakla
                     leftover = combined.subarray(usableLength);
 
                     if (usableData.length > 0) {
@@ -281,33 +223,26 @@ const Controllers = {
                             UI.setStatus("STREAMING");
                         }
                         
-                        // Güvenli Dönüşüm (Hata vermez)
+                        // Convert Int16 to Float32
                         const float32Data = new Float32Array(usableData.length / 2);
                         const int16Data = new Int16Array(usableData.buffer, usableData.byteOffset, usableData.length / 2);
-                        
                         for (let i = 0; i < int16Data.length; i++) {
-                            // Int16 (-32768..32767) -> Float32 (-1.0..1.0)
                             const v = int16Data[i];
                             float32Data[i] = v >= 0 ? v / 32767 : v / 32768;
                         }
                         
-                        await playChunk(float32Data, 24000);
+                        // Play
+                        await playChunk(float32Data, params.sample_rate);
                     }
                 }
-                
-                // İndirme bittiğinde Audio Core'a haber ver
                 if (window.notifyDownloadFinished) window.notifyDownloadFinished();
-                
+
             } else {
-                // --- NON-STREAM İŞLEME ---
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
                 const player = document.getElementById('classicPlayer');
-                
-                if (player) {
-                    player.src = url;
-                    player.play();
-                }
+                player.src = url;
+                player.play();
                 
                 UI.updateLatency(Math.round(performance.now() - startTime));
                 UI.setStatus("PLAYING");
@@ -317,36 +252,30 @@ const Controllers = {
         } catch (err) {
             if (err.name !== 'AbortError') {
                 console.error(err);
-                UI.showError(err.message); // Alert yerine entegre hata gösterimi
+                UI.showToast(err.message, "error");
                 this.stopPlayback(false);
             }
         }
     }
 };
 
-// --- GLOBAL BRIDGE (HTML Etkileşimi) ---
-// HTML'deki onclick="fonksiyon()" çağrıları için global tanımlamalar
-
+// Global Assignments
 window.Controllers = Controllers;
 window.handleGenerate = () => Controllers.handleGenerate();
-
-// Legacy Toggle Logic (CSS class manipülasyonu içerdiği için burada)
 window.toggleHistory = () => {
     const drawer = document.getElementById('historyDrawer');
     const overlay = document.getElementById('historyOverlay');
-    if (!drawer.classList.contains('translate-x-full')) {
+    if (drawer.classList.contains('translate-x-full')) {
+        drawer.classList.remove('translate-x-full');
+        overlay.classList.remove('hidden');
+        setTimeout(() => overlay.classList.add('opacity-100'), 10);
+        Controllers.loadHistory();
+    } else {
         drawer.classList.add('translate-x-full');
         overlay.classList.remove('opacity-100');
         setTimeout(() => overlay.classList.add('hidden'), 300);
-    } else {
-        drawer.classList.remove('translate-x-full');
-        overlay.classList.remove('hidden');
-        void overlay.offsetWidth;
-        overlay.classList.add('opacity-100');
-        Controllers.loadHistory();
     }
 };
-
 window.setMode = (mode) => {
     const btnStd = document.getElementById('btn-std');
     const btnCln = document.getElementById('btn-cln');
@@ -357,18 +286,13 @@ window.setMode = (mode) => {
     const inactiveClass = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md text-gray-500 hover:text-white transition-all';
 
     if (mode === 'standard') {
-        btnStd.className = activeClass;
-        btnCln.className = inactiveClass;
-        pnlStd.classList.remove('hidden');
-        pnlCln.classList.add('hidden');
+        btnStd.className = activeClass; btnCln.className = inactiveClass;
+        pnlStd.classList.remove('hidden'); pnlCln.classList.add('hidden');
     } else {
-        btnCln.className = activeClass;
-        btnStd.className = inactiveClass;
-        pnlCln.classList.remove('hidden');
-        pnlStd.classList.add('hidden');
+        btnCln.className = activeClass; btnStd.className = inactiveClass;
+        pnlCln.classList.remove('hidden'); pnlStd.classList.add('hidden');
     }
 };
-
 window.toggleAdvanced = () => {
     const panel = document.getElementById('advanced-panel');
     const icon = document.getElementById('adv-icon');
@@ -381,31 +305,35 @@ window.toggleAdvanced = () => {
     }
 };
 
-// Callback Bağlantıları
-window.toggleMicUI = (isRec) => UI.showRecordingState(isRec);
-window.onRecordingComplete = () => Controllers.handleRecordingComplete();
-window.clearRecordingUI = () => Controllers.clearCloneData();
-window.onAudioPlaybackComplete = () => Controllers.stopPlayback(false);
+window.insertSSMLTag = (type) => {
+    const area = document.getElementById('textInput');
+    const start = area.selectionStart;
+    const end = area.selectionEnd;
+    const text = area.value;
+    let tag = "";
+    
+    if (type === 'pause') tag = '<break time="1s" />';
+    else if (type === 'emphasize') tag = `<emphasis level="strong">${text.substring(start, end) || 'text'}</emphasis>`;
+    
+    area.value = text.substring(0, start) + tag + text.substring(end);
+};
 
-// --- BAŞLATMA ---
-document.addEventListener('DOMContentLoaded', () => {
-    if (window.initUIEvents) window.initUIEvents();
-    Controllers.loadSpeakers();
-    
-    // Dosya seçimi olayını dinle
-    const fileInput = document.getElementById('ref_audio');
-    if (fileInput) {
-        fileInput.addEventListener('change', (e) => Controllers.handleFileSelect(e));
-    }
-    
-    // Klasik oynatıcı bitiş kontrolü
-    const player = document.getElementById('classicPlayer');
-    if (player) {
-        player.onended = () => {
-            // Sadece non-stream modda bitişi buradan yönet
-            if (State.isPlaying && !document.getElementById('stream').checked) {
-                 Controllers.stopPlayback(false); 
-            }
-        };
+// VCA Listener
+document.addEventListener('vca-update', (e) => {
+    const m = e.detail;
+    const panel = document.getElementById('vca-panel');
+    if(m.time) {
+        panel.classList.remove('hidden');
+        document.getElementById('vca-time').innerText = `${m.time}s`;
+        document.getElementById('vca-chars').innerText = m.chars;
+        const rtfEl = document.getElementById('vca-rtf');
+        rtfEl.innerText = m.rtf;
+        const rtfVal = parseFloat(m.rtf);
+        rtfEl.className = rtfVal < 0.3 ? "font-bold text-green-400" : "font-bold text-yellow-400";
+        panel.classList.add('animate-pulse');
+        setTimeout(() => panel.classList.remove('animate-pulse'), 500);
     }
 });
+
+// Boot
+document.addEventListener('DOMContentLoaded', () => Controllers.boot());
