@@ -1,0 +1,64 @@
+import os
+import grpc
+import logging
+import time
+
+# Sentiric Contracts (Otomatik üretilen kodlar)
+from sentiric.tts.v1 import tts_pb2
+from sentiric.tts.v1 import tts_pb2_grpc
+
+# Loglama Ayarları
+logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
+logger = logging.getLogger("TEST-CLIENT")
+
+def run_test():
+    # 1. Konfigürasyonu Ortam Değişkenlerinden Al (NO HARDCODING)
+    # Varsayılanlar localhost ve 14031'dir ama override edilebilir.
+    TARGET_HOST = os.getenv("TTS_SERVICE_HOST", "localhost")
+    TARGET_PORT = os.getenv("TTS_SERVICE_PORT", "14031")
+    TARGET_ADDRESS = f"{TARGET_HOST}:{TARGET_PORT}"
+    
+    OUTPUT_FILE = os.getenv("TEST_OUTPUT_FILE", "tests/output/grpc_test_audio.wav")
+
+    logger.info(f"🔌 Connecting to gRPC Service at: {TARGET_ADDRESS}")
+
+    # 2. Kanal Oluştur (Insecure - Development için)
+    # Gelecekte mTLS için buraya sertifika yükleme eklenecek.
+    try:
+        with grpc.insecure_channel(TARGET_ADDRESS) as channel:
+            stub = tts_pb2_grpc.TextToSpeechServiceStub(channel)
+            
+            # 3. İsteği Hazırla (Contracts'a uygun)
+            request = tts_pb2.SynthesizeRequest(
+                text="Hello sentrik team. This is a gRPC integration test running on production configuration.",
+                language_code="en",
+                voice_selector="Ana Florence" # Modelin desteklediği bir ses
+            )
+
+            logger.info("📤 Sending Synthesize Request...")
+            start_time = time.time()
+
+            # 4. RPC Çağrısı
+            response = stub.Synthesize(request)
+            
+            duration = time.time() - start_time
+            logger.info(f"📥 Response Received in {duration:.3f}s")
+            logger.info(f"🤖 Engine Used: {response.engine_used}")
+
+            # 5. Çıktıyı Kaydet
+            os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
+            with open(OUTPUT_FILE, "wb") as f:
+                f.write(response.audio_content)
+            
+            logger.info(f"✅ Audio saved to: {OUTPUT_FILE}")
+            logger.info(f"📊 Audio Size: {len(response.audio_content)} bytes")
+
+    except grpc.RpcError as e:
+        logger.error(f"❌ gRPC Error: {e.code()} - {e.details()}")
+        exit(1)
+    except Exception as e:
+        logger.error(f"❌ Unexpected Error: {e}")
+        exit(1)
+
+if __name__ == "__main__":
+    run_test()

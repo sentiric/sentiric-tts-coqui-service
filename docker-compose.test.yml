@@ -1,0 +1,28 @@
+
+services:
+  # Bu servis sadece testi çalıştırıp kapanır
+  tts-tester:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Test scriptini çalıştıracak şekilde komutu eziyoruz
+    command: python tests/grpc_client.py
+    environment:
+      # Konteyner içinden servis ismine (host) erişim
+      - TTS_SERVICE_HOST=tts-coqui-service
+      - TTS_SERVICE_PORT=14031
+      - TEST_OUTPUT_FILE=/app/tests/output/grpc_test_result.wav
+    volumes:
+      # Çıktıyı host makinede görebilmek için mount ediyoruz
+      - ./tests/output:/app/tests/output
+    networks:
+      - sentiric-net
+    # depends_on:
+    #   tts-coqui-service:
+    #     condition: service_started
+
+# Mevcut ağa bağlanması için (Ana docker-compose.yml ile aynı ağ adı olmalı)
+networks:
+  sentiric-net:
+    external: true
+    name: "sentiric.cloud"
