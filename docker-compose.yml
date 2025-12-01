@@ -47,7 +47,6 @@ services:
       - "${TTS_COQUI_SERVICE_HTTP_PORT:-14030}:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
       - "${TTS_COQUI_SERVICE_GRPC_PORT:-14031}:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
       - "${TTS_COQUI_SERVICE_METRICS_PORT:-14032}:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"
-
     networks:
       sentiric-net:
         ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
@@ -60,7 +59,9 @@ services:
               count: 1
               capabilities: [gpu]
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:14030/health"]
+      # HTTP portunun değişken olduğunu unutma
+      test: ["CMD", "curl", "-f", "http://localhost:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}/health"]
       interval: 30s
       timeout: 10s
-      retries: 3
+      retries: 5      # Model yüklenmesi uzun sürebilir, retry sayısını artırdık
+      start_period: 60s # İlk açılışta grace period

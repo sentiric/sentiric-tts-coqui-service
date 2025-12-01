@@ -316,7 +316,8 @@ const Controllers = {
 
         } catch (err) {
             if (err.name !== 'AbortError') {
-                alert("Error: " + err.message);
+                console.error(err);
+                UI.showError(err.message); // Alert yerine entegre hata gösterimi
                 this.stopPlayback(false);
             }
         }

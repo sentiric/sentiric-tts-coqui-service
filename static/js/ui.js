@@ -1,7 +1,7 @@
 const $ = id => document.getElementById(id);
 
 class UI {
-    // ... (Mevcut metodlar aynen kalıyor) ...
+
     static setPlayingState(isPlaying) {
         if(isPlaying) {
             $('playIcon').classList.add('hidden');
@@ -9,6 +9,8 @@ class UI {
             $('genBtn').classList.replace('bg-white','bg-red-500');
             $('genBtn').classList.add('text-white');
             $('statusText').innerText = "PROCESSING...";
+            // Kullanıcı tekrar basamasın diye butonu disable etmiyoruz (stop için lazım)
+            // Ama inputları disable edebiliriz.
         } else {
             $('stopIcon').classList.add('hidden');
             $('playIcon').classList.remove('hidden');
@@ -18,6 +20,24 @@ class UI {
             $('latencyStat').classList.add('hidden');
         }
     }
+
+    // YENİ: Global Hata Gösterimi
+    static showError(message) {
+        const statusEl = $('statusText');
+        statusEl.innerText = "ERROR!";
+        statusEl.classList.add('text-red-500');
+        
+        // Basit bir toast veya alert
+        alert(`⚠️ Operation Failed:\n${message}`);
+        
+        setTimeout(() => {
+            statusEl.innerText = "READY";
+            statusEl.classList.remove('text-red-500');
+        }, 3000);
+        
+        this.setPlayingState(false);
+    }
+
     static updateLatency(ms) { $('latencyVal').innerText = `${ms}ms`; $('latencyStat').classList.remove('hidden'); }
     static setStatus(text) { $('statusText').innerText = text; }
     static populateSpeakers(data) {
