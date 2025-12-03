@@ -6,10 +6,29 @@ class UI {
 
         $('app-version').innerText = `v${config.version}`;
         
-        // Setup Sliders
+        // 1. Dilleri Doldur (Dinamik)
+        const langSelect = $('global-lang');
+        const studioLang = $('global-lang'); // Studio modu globali kullanır
+        
+        if (config.limits.supported_languages) {
+            langSelect.innerHTML = '';
+            config.limits.supported_languages.forEach(lang => {
+                const opt = document.createElement('option');
+                opt.value = lang.code;
+                opt.innerText = lang.name.toUpperCase();
+                if (lang.code === config.defaults.language) opt.selected = true;
+                langSelect.appendChild(opt);
+            });
+        }
+
+        // 2. Sliderları Ayarla
         const d = config.defaults;
         this._setupSlider('speed', d.speed, 0.25, 4.0, 0.1);
         this._setupSlider('temp', d.temperature, 0.01, 2.0, 0.05);
+        
+        // 3. Stream Checkbox
+        const streamCheck = $('stream');
+        if(streamCheck) streamCheck.checked = config.system.streaming_enabled;
     }
 
     static _setupSlider(id, def, min, max, step) {
@@ -30,8 +49,13 @@ class UI {
     static showToast(message, type = 'info') {
         const container = $('toast-container');
         const toast = document.createElement('div');
-        toast.className = `toast ${type}`;
-        toast.innerHTML = `<span>${message}</span>`;
+        
+        let colorClass = "border-blue-500";
+        if(type === 'error') colorClass = "border-red-500 bg-red-900/20 text-red-200";
+        if(type === 'success') colorClass = "border-green-500 bg-green-900/20 text-green-200";
+
+        toast.className = `toast mb-3 p-4 rounded-lg border-l-4 ${colorClass} bg-[#18181b] shadow-2xl flex items-center justify-between min-w-[300px] animate-slideIn`;
+        toast.innerHTML = `<span class="text-xs font-bold">${message}</span>`;
         
         const closeBtn = document.createElement('button');
         closeBtn.innerHTML = '×';
@@ -42,7 +66,7 @@ class UI {
         container.appendChild(toast);
 
         setTimeout(() => {
-            toast.style.animation = 'fadeOut 0.5s forwards';
+            toast.style.opacity = '0';
             setTimeout(() => toast.remove(), 500);
         }, 5000);
     }
@@ -57,27 +81,24 @@ class UI {
             overlay.style.opacity = '0';
             setTimeout(() => overlay.classList.add('hidden'), 500);
             $('genBtn').disabled = false;
-            this.setStatus("READY");
         }
     }
 
     static setPlayingState(isPlaying) {
+        const btn = $('genBtn');
         if(isPlaying) {
-            $('genBtn').innerText = "PROCESSING...";
-            $('genBtn').classList.add('animate-pulse');
-            $('genBtn').disabled = true;
+            btn.innerHTML = `<div class="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div><span>PROCESSING</span>`;
+            btn.disabled = true;
         } else {
-            $('genBtn').innerText = "GENERATE SPEECH";
-            $('genBtn').classList.remove('animate-pulse');
-            $('genBtn').disabled = false;
+            btn.innerHTML = `<span>GENERATE AUDIO</span>`;
+            btn.disabled = false;
         }
     }
 
-    static setStatus(text) { /* legacy support */ }
-    static updateLatency(ms) { /* legacy support */ }
+    static setStatus(text) { /* legacy */ }
+    static updateLatency(ms) { /* legacy */ }
 
     static populateSpeakers(data) {
-        // Data format: { "speakers": { "Name": ["style1", "style2"] } }
         const map = data.speakers;
         window.CurrentSpeakersMap = map; 
         
@@ -122,12 +143,12 @@ class UI {
 
     static renderHistory(data) {
         const l=$('historyList'); if(!l)return;
-        l.innerHTML=`<div class="flex justify-between mb-2 px-1"><span class="text-[10px] font-bold text-gray-500">RECENT</span><button onclick="Controllers.clearAllHistory()" class="text-[9px] text-red-500 hover:text-red-400">CLEAR ALL</button></div>`;
-        if(!data.length){l.innerHTML+='<div class="text-center text-xs text-gray-600 mt-5">Empty</div>';return;}
+        l.innerHTML=`<div class="flex justify-between mb-4"><span class="text-[10px] font-bold text-gray-500 uppercase tracking-widest">Recent Files</span><button onclick="Controllers.clearAllHistory()" class="text-[9px] text-red-500 hover:text-red-400 font-bold">CLEAR ALL</button></div>`;
+        if(!data.length){l.innerHTML+='<div class="text-center text-xs text-gray-600 mt-10">No history yet.</div>';return;}
         data.forEach(i=>{
             const e=document.createElement('div');
-            e.className='bg-[#18181b] p-2 rounded border border-white/5 mb-2 hover:border-blue-500/30 transition-colors';
-            e.innerHTML=`<div class="flex justify-between"><span class="text-[9px] font-bold text-blue-400 bg-blue-900/20 px-1 rounded">${i.mode||'TTS'}</span><button onclick="Controllers.deleteHistory('${i.filename}')" class="text-gray-600 hover:text-red-500">×</button></div><p class="text-xs text-gray-300 italic truncate mt-1 cursor-pointer" onclick="Controllers.playHistory('${i.filename}')">"${i.text}"</p>`;
+            e.className='bg-[#18181b] p-3 rounded-lg border border-white/5 mb-2 hover:border-blue-500/50 transition-all group';
+            e.innerHTML=`<div class="flex justify-between items-center mb-2"><span class="text-[9px] font-bold text-blue-400 bg-blue-900/10 px-2 py-0.5 rounded border border-blue-900/30">${i.mode||'TTS'}</span><button onclick="Controllers.deleteHistory('${i.filename}')" class="text-gray-600 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity">×</button></div><p class="text-xs text-gray-300 font-medium truncate cursor-pointer hover:text-white" onclick="Controllers.playHistory('${i.filename}')">"${i.text}"</p><div class="flex justify-between mt-2 pt-2 border-t border-white/5"><span class="text-[9px] text-gray-500">${i.speaker}</span><span class="text-[9px] text-gray-600">${i.date.split(' ')[1]}</span></div>`;
             l.appendChild(e);
         });
     }
