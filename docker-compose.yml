@@ -38,30 +38,36 @@ services:
       context: ../sentiric-tts-coqui-service
     env_file:
       - .env
-    volumes:
+    volumes: 
+      - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
+      - "${ASSETS_REPO_PATH}/docs/audio/speakers/en:/app/speakers"
       - tts-coqui-models:/root/.local/share/tts
-      - ../sentiric-assets/docs/audio/speakers/en:/app/speakers
       - tts-coqui-history:/app/history
       - tts-coqui-cache:/app/cache
-    ports:
+    ports: 
       - "${TTS_COQUI_SERVICE_HTTP_PORT:-14030}:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}"
       - "${TTS_COQUI_SERVICE_GRPC_PORT:-14031}:${TTS_COQUI_SERVICE_GRPC_PORT:-14031}"
-      - "${TTS_COQUI_SERVICE_METRICS_PORT:-14032}:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"
+      - "${TTS_COQUI_SERVICE_METRICS_PORT:-14032}:${TTS_COQUI_SERVICE_METRICS_PORT:-14032}"          
     networks:
       sentiric-net:
-        ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS}       
-    restart: always              
+        ipv4_address: ${TTS_COQUI_SERVICE_IPV4_ADDRESS:-10.88.40.3}  
+    dns:
+      - ${DISCOVERY_SERVICE_IPV4_ADDRESS:-10.88.5.1}
+      - ${PRIMARY_DNS:-8.8.8.8}
+      - ${SECONDARY_DNS:-1.1.1.1}    
+    dns_search:
+      - ${DISCOVERY_DNS_SEARCH_DOMAIN}               
+    restart: always   
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:14030/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5      # Model yüklenmesi uzun sürebilir, retry sayısını artırdık
+      start_period: 60s # İlk açılışta grace period
     deploy:
       resources:
         reservations:
           devices:
             - driver: nvidia
               count: 1
-              capabilities: [gpu]
-    healthcheck:
-      # HTTP portunun değişken olduğunu unutma
-      test: ["CMD", "curl", "-f", "http://localhost:${TTS_COQUI_SERVICE_HTTP_PORT:-14030}/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 5      # Model yüklenmesi uzun sürebilir, retry sayısını artırdık
-      start_period: 60s # İlk açılışta grace period
+              capabilities: [gpu]  
