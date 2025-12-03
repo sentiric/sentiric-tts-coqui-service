@@ -1,26 +1,26 @@
 import os
-from typing import List
+from typing import List, Optional
 from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
-    APP_VERSION: str = "1.2.0"
+    APP_VERSION: str = "1.2.0-stable"
     ENV: str = os.getenv("ENV", "production")
     
     # --- NETWORK & SECURITY ---
     HOST: str = "0.0.0.0"
-    # Bu değişkenler .env dosyasındaki isimlerle (TTS_COQUI_SERVICE_...) otomatik eşleşmez
-    # çünkü Pydantic varsayılan olarak case-insensitive eşleşme yapar ama prefix beklemez.
-    # Aşağıda Field alias'ları veya __init__ içinde mapping gerekebilir, 
-    # ancak en temizi os.getenv ile explicit atamaktır.
-    
     HTTP_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_HTTP_PORT", "14030"))
     GRPC_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_GRPC_PORT", "14031"))
     METRICS_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_METRICS_PORT", "14032"))
     
     # CORS
     CORS_ORIGINS: List[str] = os.getenv("TTS_COQUI_SERVICE_CORS_ORIGINS", "*").split(",")
+
+    # [YENİ] STANDALONE SECURITY
+    # Eğer bu değer set edilirse, API isteklerinde 'X-API-Key' başlığı aranır.
+    # Boş ise (Gateway arkasında) doğrulama yapılmaz.
+    API_KEY: Optional[str] = os.getenv("TTS_COQUI_SERVICE_API_KEY", None)
 
     # --- MODEL & SYSTEM ---
     MODEL_NAME: str = os.getenv("TTS_COQUI_SERVICE_MODEL_NAME", "tts_models/multilingual/multi-dataset/xtts_v2")
@@ -36,7 +36,7 @@ class Settings(BaseSettings):
     ENABLE_ATTENTION_KV_CPU_OFFLOAD: bool = os.getenv("TTS_COQUI_SERVICE_ENABLE_ATTENTION_KV_CPU_OFFLOAD", "true").lower() == "true"
     ENABLE_STREAMING: bool = os.getenv("TTS_COQUI_SERVICE_ENABLE_STREAMING", "false").lower() == "true"
 
-    # --- 🎛️ INFERENCE DEFAULTS (STANDARDIZE EDİLDİ) ---
+    # --- INFERENCE DEFAULTS ---
     DEFAULT_LANGUAGE: str = os.getenv("TTS_COQUI_SERVICE_DEFAULT_LANGUAGE", "tr")
     DEFAULT_SPEAKER: str = os.getenv("TTS_COQUI_SERVICE_DEFAULT_SPEAKER", "Ana Florence")
     
@@ -54,7 +54,6 @@ class Settings(BaseSettings):
     
     def __init__(self, **data):
         super().__init__(**data)
-        # XTTS kütüphanesi bu ortam değişkenini doğrudan okur, kod içinde set etmek garantidir.
         os.environ["COQUI_TOS_AGREED"] = self.COQUI_TOS_AGREED
 
 settings = Settings()

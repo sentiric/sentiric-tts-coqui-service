@@ -1,0 +1,28 @@
+
+services:
+  tts-service:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: sentiric-xtts-standalone
+    restart: unless-stopped
+    ports:
+      - "14030:14030"  # HTTP
+      - "14031:14031" # gRPC
+    environment:
+      - ENV=production
+      - TTS_COQUI_SERVICE_DEVICE=cuda
+      - TTS_COQUI_SERVICE_LOW_RESOURCE_MODE=true
+      # Güvenlik için örnek bir API Key. Prodüksiyonda değiştirin.
+      - TTS_COQUI_SERVICE_API_KEY=sentiric-secret-key-123
+    volumes:
+      - ./models:/root/.local/share/tts  # Modelleri kalıcı yap
+      - ./speakers:/app/speakers         # Ses klonlama örnekleri
+      - ./history:/app/history           # Üretilen ses geçmişi
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

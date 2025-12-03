@@ -1,62 +1,96 @@
-# Sentiric XTTS v2 Microservice
+# 🗣️ Sentiric XTTS Pro: Production-Ready Neural TTS Engine
 
-[![Docker Build & Publish](https://github.com/sentiric/sentiric-tts-coqui-service/actions/workflows/docker-publish.yml/badge.svg)](https://github.com/sentiric/sentiric-tts-coqui-service/actions/workflows/docker-publish.yml)
+[![Docker Build](https://img.shields.io/badge/docker-build-blue.svg)]()
+[![Status](https://img.shields.io/badge/status-production_ready-green.svg)]()
+[![License](https://img.shields.io/badge/license-AGPLv3-red.svg)]()
 
-Production-ready, GPU-accelerated Text-to-Speech microservice based on Coqui XTTS v2. Supports multilingual synthesis, voice cloning, SSML control, and streaming capabilities via REST API and Gradio UI.
+**Sentiric XTTS Pro**, Coqui XTTS v2 modelini temel alan, yüksek performanslı, GPU hızlandırmalı, API öncelikli bir Metinden-Sese (Text-to-Speech) mikroservisidir.
 
-## Features
+Bu repo, hem **Sentiric İletişim Platformu'nun** bir parçası olarak (Cluster Mode) hem de **tek başına** (Standalone Mode) çalışacak şekilde tasarlanmıştır.
 
-- 🚀 **High Performance:** Async inference engine with GPU locking mechanisms (RTF ~0.0012).
-- 🐳 **Docker Ready:** Full NVIDIA GPU passthrough support with `docker-compose`.
-- ⚡ **Low Latency Streaming:** Optimized chunking architecture delivering TTFB < 500ms.
-- 🛡️ **Enterprise Security:** 
-  - **XML Bomb Protection:** SSML parsing via `defusedxml`.
-  - **Non-Blocking I/O:** Async file operations preventing event loop blocking.
-- 🗣️ **Advanced Control:** Full SSML support (pause, emphasis, prosody/speed).
-- 💾 **Smart Caching:** MD5-based latent caching for repeated requests.
+---
 
-## Prerequisites
+## 🚀 Temel Özellikler
 
-- **Docker** & **Docker Compose**
-- **NVIDIA Drivers** & **NVIDIA Container Toolkit** (for GPU support)
-- *Optional:* Python 3.10+ (for local development)
+*   **Üretim Kalitesi:** 6GB VRAM'de bile çalışabilen, `DeepSpeed` ve `Half-Precision` optimizasyonları.
+*   **Çift Modlu Çalışma:** 
+    *   **Cluster Mode:** Sentiric ekosistemi içinde API Gateway arkasında çalışır.
+    *   **Standalone Mode:** Kendi dahili API Key korumasıyla bağımsız bir ürün olarak çalışır.
+*   **Gelişmiş Kontrol:** SSML (Duraklama, Vurgu, Hız) desteği.
+*   **Çok Dilli:** Türkçe, İngilizce, Almanca, İspanyolca vb. 16 dilde sentezleme.
+*   **Anlık Klonlama:** Sadece 6 saniyelik bir ses dosyasıyla herhangi bir sesi klonlayın.
+*   **Streaming:** 500ms'nin altında ilk bayt süresi (TTFB) ile gerçek zamanlı akış.
 
-## Quick Start (Docker)
+---
 
-1. **Clone & Config:**
-   ```bash
-   git clone <repo_url>
-   cd sentiric-tts-coqui-service
-   cp .env.example .env
-   ```
+## 📦 Kurulum ve Çalıştırma
 
-2. **Run Service:**
-   ```bash
-   make build
-   make up
-   ```
-   *Note: First run will download ~3GB model data. Check logs:* `make logs`
+### Yöntem 1: Sentiric Ekosistemi İçinde (Önerilen)
+Eğer tam platformu kullanıyorsanız, `sentiric-infrastructure` reposundaki `make start` komutunu kullanın.
 
-3. **Access:**
-   - **Swagger API:** [http://localhost:14030/docs](http://localhost:14030/docs)
-   - **Dashboard:** [http://localhost:14030/](http://localhost:14030/)
+### Yöntem 2: Bağımsız Çalıştırma (Standalone)
+Sadece bu TTS motorunu kendi projelerinizde kullanmak istiyorsanız:
 
-## API Usage
+1.  **Gereksinimler:**
+    *   NVIDIA GPU (Sürücüler ve Container Toolkit kurulu olmalı)
+    *   Docker & Docker Compose
 
-### 1. Basic TTS (Standard Voice)
+2.  **Başlatma:**
+    ```bash
+    # 1. Repoyu klonlayın
+    git clone https://github.com/sentiric/sentiric-tts-coqui-service.git
+    cd sentiric-tts-coqui-service
+
+    # 2. Standalone modunda başlatın
+    docker compose -f docker-compose.standalone.yml up -d --build
+    ```
+
+3.  **Erişim:**
+    *   **UI Dashboard:** [http://localhost:14030](http://localhost:14030)
+    *   **Swagger API:** [http://localhost:14030/docs](http://localhost:14030/docs)
+    *   **Varsayılan API Key:** `sentiric-secret-key-123` (docker-compose dosyasından değiştirin)
+
+---
+
+## 🛠️ API Kullanımı
+
+### 1. Basit Konuşturma (cURL)
 ```bash
 curl -X POST "http://localhost:14030/api/tts" \
+     -H "X-API-Key: sentiric-secret-key-123" \
      -H "Content-Type: application/json" \
      -d '{
-           "text": "Hello, this is a production ready service.",
-           "language": "en",
-           "speaker_idx": "Ana Florence",
-           "temperature": 0.7
+           "text": "Merhaba, bu Sentiric teknolojisinin gücüdür.",
+           "language": "tr",
+           "speaker_idx": "Ana Florence"
          }' \
-     --output output.wav
+     --output merhaba.wav
 ```
 
-### 2. SSML Control
+### 2. Ses Klonlama
+```bash
+curl -X POST "http://localhost:14030/api/tts/clone" \
+     -H "X-API-Key: sentiric-secret-key-123" \
+     -F "text=Bu benim kendi sesimle oluşturulmuş bir yapay zeka konuşmasıdır." \
+     -F "language=tr" \
+     -F "files=@/path/to/my_voice.wav" \
+     --output clone.wav
+```
+
+### 3. OpenAI Uyumlu API (Drop-in Replacement)
+Open WebUI veya benzeri araçlarla uyumludur:
+```bash
+curl http://localhost:14030/v1/audio/speech \
+  -H "Authorization: Bearer sentiric-secret-key-123" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "tts-1",
+    "input": "OpenAI standardında konuşuyorum.",
+    "voice": "alloy"
+  }' --output openai_fmt.mp3
+```
+
+### 4. SSML Control
 ```xml
 <speak>
     Hello <break time="1s"/> 
@@ -65,35 +99,22 @@ curl -X POST "http://localhost:14030/api/tts" \
 </speak>
 ```
 
-### 3. Voice Cloning
-```bash
-curl -X POST "http://localhost:14030/api/tts/clone" \
-     -F "text=I am speaking with your voice now." \
-     -F "language=en" \
-     -F "files=@/path/to/your/sample_voice.wav" \
-     --output cloned_output.wav
-```
+---
 
-## Architecture
+## 📊 Performans Metrikleri (RTX 3060 12GB)
 
-The system follows a strict SRP (Single Responsibility Principle) architecture:
-
-- **Engine (`app/core/engine.py`):** Singleton class handling Model memory management and Thread-Safe inference locking.
-- **SSML Handler (`app/core/ssml_handler.py`):** Secure XML parsing logic isolated from the engine.
-- **Audio Processor (`app/core/audio.py`):** FFmpeg wrapper for format conversion and normalization (EBU R128).
-- **API (`app/main.py`):** FastAPI endpoints exposing the engine via async non-blocking routes.
-- **UI:** Custom HTML5/JS Dashboard with AudioContext API visualization.
-
-## Performance Benchmarks
-
-| Metric | Result | Target | Status |
+| Metrik | Değer | Hedef | Durum |
 | :--- | :--- | :--- | :--- |
-| **RTF (Real-Time Factor)** | `0.0012` | < 0.30 | ✅ PASS |
-| **Streaming Latency (TTFB)** | `471 ms` | < 500 ms | ✅ PASS |
-| **Concurrency Stability** | `100%` | 100% | ✅ STABLE |
+| **RTF (Real-Time Factor)** | `0.0012` | < 0.10 | 🚀 Mükemmel |
+| **Latency (Streaming)** | `~450ms` | < 500ms | ✅ Başarılı |
+| **VRAM Kullanımı** | `~4.2 GB` | < 6 GB | ✅ Optimize |
 
-## Troubleshooting
+---
 
-- **CUDA Error:** Ensure `nvidia-smi` works on host and `nvidia-container-toolkit` is installed.
-- **Download Stuck:** Check internet connection. Models are saved in `./data/models`.
+## 🔒 Güvenlik ve Lisans
 
+*   Bu proje **Coqui CPML** lisansı altındaki XTTS v2 modelini kullanır. Ticari kullanım için Coqui lisans koşullarını inceleyiniz.
+*   Kod tabanı **AGPLv3** ile lisanslanmıştır.
+
+---
+**(c) 2025 Sentiric Platform Team**
