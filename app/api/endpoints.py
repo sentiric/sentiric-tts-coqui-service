@@ -8,7 +8,7 @@ import glob
 import uuid
 import logging
 import time
-import langid  # Dil algılama
+import langid
 
 from app.core.engine import tts_engine
 from app.core.config import settings
@@ -22,12 +22,9 @@ UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
-# XTTS v2'nin desteklediği diller (Referans için)
 SUPPORTED_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]
 
-# --- YARDIMCI FONKSİYONLAR ---
 async def cleanup_files(file_paths: List[str]):
-    """Geçici dosyaları asenkron olarak siler"""
     for path in file_paths:
         try:
             if os.path.exists(path):
@@ -36,15 +33,12 @@ async def cleanup_files(file_paths: List[str]):
         except Exception as e:
             logger.warning(f"Cleanup failed for {path}: {e}")
 
-# --- SYSTEM & CONFIG ENDPOINTS ---
-
 @router.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return Response(content=b"", media_type="image/x-icon")
     
 @router.get("/health")
 async def health_check():
-    """K8s ve Docker healthcheck için durum raporu"""
     return {
         "status": "ok", 
         "device": settings.DEVICE, 
@@ -54,10 +48,6 @@ async def health_check():
 
 @router.get("/api/config")
 async def get_public_config():
-    """
-    UI'ın (Frontend) başlangıç değerlerini ve limitlerini ayarlaması için
-    backend konfigürasyonunu döner.
-    """
     return {
         "app_name": settings.APP_NAME,
         "version": settings.APP_VERSION,
@@ -80,8 +70,6 @@ async def get_public_config():
             "device": settings.DEVICE
         }
     }
-
-# --- HISTORY ENDPOINTS ---
 
 @router.get("/api/history")
 async def get_history():
@@ -108,7 +96,6 @@ async def delete_all_history():
         tasks = []
         for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
             if os.path.basename(f) != "history.db": tasks.append(remove_safe(f))
-        # Cache temizliği opsiyonel, şimdilik history odaklı
         results = await asyncio.gather(*tasks)
         return {"status": "cleared", "files_deleted": sum(results)}
     except Exception as e:
@@ -126,20 +113,15 @@ async def delete_history_entry(filename: str):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- SPEAKER MANAGEMENT ---
-
 @router.get("/api/speakers")
 async def get_speakers():
-    speakers = tts_engine.get_speakers()
-    return {"speakers": speakers, "count": len(speakers)}
+    speakers_map = tts_engine.get_speakers()
+    return {"speakers": speakers_map, "count": len(speakers_map)}
 
 @router.post("/api/speakers/refresh")
 async def refresh_speakers_cache():
-    # Force parametresi ile cache'i bypass et ve diski tara
     report = await asyncio.to_thread(tts_engine.refresh_speakers, force=True)
     return {"status": "ok", "data": report}
-
-# --- MAIN TTS ENDPOINT ---
 
 @router.post("/api/tts")
 async def generate_speech(request: TTSRequest):
@@ -148,7 +130,6 @@ async def generate_speech(request: TTSRequest):
     
     start_time = time.perf_counter()
     try:
-        # Pydantic modeli zaten config defaultlarını içeriyor
         params = request.model_dump()
         
         if request.stream:
@@ -157,13 +138,10 @@ async def generate_speech(request: TTSRequest):
                 media_type="application/octet-stream"
             )
         else:
-            # Bloklayıcı işlemi thread pool'da çalıştır
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             
-            # Metrik hesaplama
             process_time = time.perf_counter() - start_time
             char_count = len(request.text)
-            # 16-bit PCM = 2 bytes per sample
             audio_duration_sec = len(audio_bytes) / (request.sample_rate * 2) 
             rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
 
@@ -173,7 +151,6 @@ async def generate_speech(request: TTSRequest):
                 "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "standard"
             })
 
-            # Dosya uzantısı ve MIME type belirleme
             ext = "wav"
             media_type = "audio/wav"
             
@@ -187,14 +164,12 @@ async def generate_speech(request: TTSRequest):
                 ext = "pcm"
                 media_type = "application/octet-stream"
             
-            # History'e kaydet
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
-            # Response headerları (VCA için kritik)
             final_response = Response(content=audio_bytes, media_type=media_type)
             final_response.headers["X-VCA-Chars"] = str(char_count)
             final_response.headers["X-VCA-Time"] =f"{process_time:.3f}"
@@ -205,14 +180,11 @@ async def generate_speech(request: TTSRequest):
         logger.error(f"TTS Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- VOICE CLONING ENDPOINT ---
-
 @router.post("/api/tts/clone")
 async def generate_speech_clone(
     text: str = Form(...),
     language: str = Form(settings.DEFAULT_LANGUAGE),
     files: List[UploadFile] = File(...),
-    # Config'den gelen varsayılan değerler
     temperature: float = Form(settings.DEFAULT_TEMPERATURE),
     speed: float = Form(settings.DEFAULT_SPEED),
     top_k: int = Form(settings.DEFAULT_TOP_K),
@@ -227,7 +199,6 @@ async def generate_speech_clone(
     start_time = time.perf_counter()
     saved_files = []
     try:
-        # Yüklenen dosyaları geçici olarak kaydet
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
@@ -241,8 +212,8 @@ async def generate_speech_clone(
             "text": text, "language": language, "temperature": temperature,
             "speed": speed, "top_k": top_k, "top_p": top_p,
             "repetition_penalty": repetition_penalty, "output_format": output_format, 
-            "speaker_idx": None, # Clone modunda speaker_idx kullanılmaz, wav dosyaları kullanılır
-            "sample_rate": 24000 # Varsayılan
+            "speaker_idx": None,
+            "sample_rate": 24000
         }
         
         if stream:
@@ -268,7 +239,6 @@ async def generate_speech_clone(
                 "duration_ms": round(process_time * 1000, 2), "rtf": round(rtf, 4), "mode": "clone"
             })
             
-            # Format ve History
             ext = output_format if output_format != "pcm" else "wav"
             if ext == "opus": ext = "ogg"
             
@@ -292,26 +262,25 @@ async def generate_speech_clone(
         logger.error(f"Clone Error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-# --- OPENAI COMPATIBLE ENDPOINTS (Open WebUI vb. için) ---
-
 @router.post("/v1/audio/speech")
 async def openai_speech_endpoint(request: OpenAISpeechRequest):
     if not request.input or not request.input.strip():
         raise HTTPException(status_code=422, detail="Input text cannot be empty.")
 
-    # 1. MEVCUT HOPARLÖRLERİ AL (Cached)
     available_speakers = tts_engine.get_speakers()
-    available_speakers_lower = {s.lower(): s for s in available_speakers}
+    # Flatten map for search
+    flat_speakers = {}
+    for name, styles in available_speakers.items():
+        flat_speakers[name.lower()] = name
+        for s in styles:
+            flat_speakers[f"{name}/{s}".lower()] = f"{name}/{s}"
     
     requested_voice = request.voice.lower()
     target_speaker = ""
 
-    # Ses Eşleştirme Mantığı
-    if requested_voice in available_speakers_lower:
-        target_speaker = available_speakers_lower[requested_voice]
+    if requested_voice in flat_speakers:
+        target_speaker = flat_speakers[requested_voice]
     else:
-        # OpenAI ses isimlerini eşle
         voice_map = {
             "alloy": "F_Narrator_Linda",
             "echo": "M_News_Bill",
@@ -322,20 +291,15 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         }
         mapped_key = voice_map.get(requested_voice)
         
-        if mapped_key and mapped_key.lower() in available_speakers_lower:
-            target_speaker = available_speakers_lower[mapped_key.lower()]
+        if mapped_key and mapped_key.lower() in flat_speakers:
+            target_speaker = flat_speakers[mapped_key.lower()]
         else:
-            # Fallback: Config'den gelen varsayılan ses
             target_speaker = settings.DEFAULT_SPEAKER
-            if target_speaker not in available_speakers:
-                 target_speaker = available_speakers[0] if available_speakers else "system_default"
 
-    # Format Düzeltme
     output_fmt = request.response_format
     if output_fmt == "aac": output_fmt = "mp3"
     if output_fmt == "flac": output_fmt = "wav"
 
-    # Dil Algılama (Fallback to Config Default)
     try:
         detected_lang, _ = langid.classify(request.input)
         if detected_lang == "zh": detected_lang = "zh-cn"
@@ -348,7 +312,7 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         "text": request.input,
         "language": detected_lang,
         "speaker_idx": target_speaker,
-        "temperature": settings.DEFAULT_TEMPERATURE, # Varsayılan
+        "temperature": settings.DEFAULT_TEMPERATURE,
         "speed": request.speed,
         "output_format": output_fmt,
         "stream": False 
@@ -369,10 +333,6 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
 
 @router.get("/v1/models")
 async def list_models():
-    """
-    Open WebUI'ın model listesi olarak tüm hoparlörleri görmesini sağlar.
-    Cache mekanizması sayesinde disk IO yapmaz.
-    """
     speakers = tts_engine.get_speakers()
     
     models_data = [
@@ -380,9 +340,9 @@ async def list_models():
         {"id": "tts-1-hd", "object": "model", "created": 1234567890, "owned_by": "sentiric-tts"}
     ]
     
-    for spk in speakers:
+    for spk_name in speakers.keys():
         models_data.append({
-            "id": spk,
+            "id": spk_name,
             "object": "model",
             "created": 1234567890,
             "owned_by": "sentiric-local"

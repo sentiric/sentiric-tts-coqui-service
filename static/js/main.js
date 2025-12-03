@@ -61,7 +61,7 @@ const Controllers = {
         UI.setStatus("SCANNING...");
         try {
             const res = await API.refreshSpeakers();
-            UI.showToast(`Found ${res.data.total_scanned} files`, "success");
+            UI.showToast(`Found ${res.data.total} speakers`, "success");
             await this.loadSpeakers();
         } catch (e) {
             UI.showToast(e.message, "error");
@@ -83,8 +83,6 @@ const Controllers = {
         if (!confirm('Delete entry?')) return;
         try {
             await API.deleteHistory(filename);
-            // Optimistic update: Listeyi yeniden çekmek yerine DOM'dan sil
-            // Ancak basitlik için yeniden yüklüyoruz
             await this.loadHistory(); 
         } catch (e) { UI.showToast("Delete failed", "error"); }
     },
@@ -138,7 +136,7 @@ const Controllers = {
         UI.resetCloneUI(true); 
     },
 
-    // --- GENERATE ---
+    // --- GENERATE (CLASSIC) ---
     async handleGenerate() {
         if (State.isPlaying) {
             this.stopPlayback(true);
@@ -147,8 +145,6 @@ const Controllers = {
 
         const text = document.getElementById('textInput').value.trim();
         if (!text) return UI.showToast("Please enter text", "error");
-
-        const isStream = document.getElementById('stream').checked;
 
         UI.setPlayingState(true);
         State.isPlaying = true;
@@ -164,25 +160,34 @@ const Controllers = {
             const modePanel = document.getElementById('panel-std');
             const isCloneMode = modePanel.classList.contains('hidden');
             
-            // Parametreleri UI'dan al (Varsayılanlar zaten UI'a config'den basılmıştı)
+            // Params
             const params = {
                 text: text,
-                language: document.getElementById('lang').value,
+                language: 'tr', // Default lang for classic mode, can be improved to have select
                 temperature: parseFloat(document.getElementById('temp').value),
                 speed: parseFloat(document.getElementById('speed').value),
-                top_k: parseInt(document.getElementById('topk').value),
-                top_p: parseFloat(document.getElementById('topp').value),
-                repetition_penalty: parseFloat(document.getElementById('rep').value),
-                stream: isStream,
-                output_format: document.getElementById('format').value,
-                // Sample rate UI'da yoksa config default'u kullan
+                top_k: 50,
+                top_p: 0.8,
+                repetition_penalty: 2.0,
+                stream: false, // Default false for now
+                output_format: 'wav',
                 sample_rate: State.config ? State.config.defaults.sample_rate : 24000 
             };
 
             let response;
 
             if (!isCloneMode) {
-                params.speaker_idx = document.getElementById('speaker').value;
+                // Speaker Logic Updated for Multi-Style
+                const spkName = document.getElementById('speaker').value;
+                const styleSelect = document.getElementById('style-select');
+                const styleContainer = document.getElementById('style-container');
+                let finalSpeaker = spkName;
+                
+                if (!styleContainer.classList.contains('hidden') && styleSelect.value && styleSelect.value !== 'default') {
+                    finalSpeaker = `${spkName}/${styleSelect.value}`;
+                }
+                params.speaker_idx = finalSpeaker;
+
                 response = await API.generateTTS(params, State.abortController.signal);
             } else {
                 const formData = new FormData();
@@ -199,55 +204,16 @@ const Controllers = {
                 response = await API.generateClone(formData, State.abortController.signal);
             }
 
-            if (isStream) {
-                const reader = response.body.getReader();
-                let leftover = new Uint8Array(0);
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    // Buffer alignment fix (copy-paste from audio-core logic)
-                    const combined = new Uint8Array(leftover.length + value.length);
-                    combined.set(leftover);
-                    combined.set(value, leftover.length);
-                    const remainder = combined.length % 2;
-                    const usableLength = combined.length - remainder;
-                    const usableData = combined.subarray(0, usableLength);
-                    leftover = combined.subarray(usableLength);
-
-                    if (usableData.length > 0) {
-                        if (!firstChunk) {
-                            firstChunk = true;
-                            UI.updateLatency(Math.round(performance.now() - startTime));
-                            UI.setStatus("STREAMING");
-                        }
-                        
-                        // Convert Int16 to Float32
-                        const float32Data = new Float32Array(usableData.length / 2);
-                        const int16Data = new Int16Array(usableData.buffer, usableData.byteOffset, usableData.length / 2);
-                        for (let i = 0; i < int16Data.length; i++) {
-                            const v = int16Data[i];
-                            float32Data[i] = v >= 0 ? v / 32767 : v / 32768;
-                        }
-                        
-                        // Play
-                        await playChunk(float32Data, params.sample_rate);
-                    }
-                }
-                if (window.notifyDownloadFinished) window.notifyDownloadFinished();
-
-            } else {
-                const blob = await response.blob();
-                const url = URL.createObjectURL(blob);
-                const player = document.getElementById('classicPlayer');
-                player.src = url;
-                player.play();
-                
-                UI.updateLatency(Math.round(performance.now() - startTime));
-                UI.setStatus("PLAYING");
-                await this.loadHistory();
-            }
+            const blob = await response.blob();
+            const url = URL.createObjectURL(blob);
+            const player = document.getElementById('classicPlayer');
+            player.src = url;
+            player.play();
+            
+            UI.updateLatency(Math.round(performance.now() - startTime));
+            UI.setStatus("PLAYING");
+            await this.loadHistory();
+            
 
         } catch (err) {
             if (err.name !== 'AbortError') {
@@ -268,12 +234,10 @@ window.toggleHistory = () => {
     if (drawer.classList.contains('translate-x-full')) {
         drawer.classList.remove('translate-x-full');
         overlay.classList.remove('hidden');
-        setTimeout(() => overlay.classList.add('opacity-100'), 10);
         Controllers.loadHistory();
     } else {
         drawer.classList.add('translate-x-full');
-        overlay.classList.remove('opacity-100');
-        setTimeout(() => overlay.classList.add('hidden'), 300);
+        overlay.classList.add('hidden');
     }
 };
 window.setMode = (mode) => {
@@ -282,8 +246,8 @@ window.setMode = (mode) => {
     const pnlStd = document.getElementById('panel-std');
     const pnlCln = document.getElementById('panel-cln');
     
-    const activeClass = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md bg-blue-600 text-white shadow-lg transition-all';
-    const inactiveClass = 'flex-1 py-2 text-[10px] font-bold uppercase tracking-wider rounded-md text-gray-500 hover:text-white transition-all';
+    const activeClass = 'flex-1 py-2 text-[10px] font-bold uppercase rounded bg-blue-600 text-white';
+    const inactiveClass = 'flex-1 py-2 text-[10px] font-bold uppercase rounded text-gray-500';
 
     if (mode === 'standard') {
         btnStd.className = activeClass; btnCln.className = inactiveClass;
@@ -293,47 +257,30 @@ window.setMode = (mode) => {
         pnlCln.classList.remove('hidden'); pnlStd.classList.add('hidden');
     }
 };
-window.toggleAdvanced = () => {
-    const panel = document.getElementById('advanced-panel');
-    const icon = document.getElementById('adv-icon');
-    if (panel.classList.contains('accordion-open')) {
-        panel.classList.remove('accordion-open');
-        icon.style.transform = 'rotate(0deg)';
+
+window.switchTab = (tab) => {
+    const vClassic = document.getElementById('view-classic');
+    const vStudio = document.getElementById('view-studio');
+    const tClassic = document.getElementById('tab-classic');
+    const tStudio = document.getElementById('tab-studio');
+
+    if (tab === 'classic') {
+        vClassic.classList.remove('hidden');
+        vStudio.classList.add('hidden');
+        tClassic.classList.replace('text-gray-400', 'text-white');
+        tClassic.classList.add('bg-blue-600');
+        tStudio.classList.remove('bg-blue-600', 'text-white');
+        tStudio.classList.add('text-gray-400');
     } else {
-        panel.classList.add('accordion-open');
-        icon.style.transform = 'rotate(180deg)';
+        vStudio.classList.remove('hidden');
+        vClassic.classList.add('hidden');
+        tStudio.classList.replace('text-gray-400', 'text-white');
+        tStudio.classList.add('bg-blue-600');
+        tClassic.classList.remove('bg-blue-600', 'text-white');
+        tClassic.classList.add('text-gray-400');
+        
+        if(window.Studio) Studio.init();
     }
 };
 
-window.insertSSMLTag = (type) => {
-    const area = document.getElementById('textInput');
-    const start = area.selectionStart;
-    const end = area.selectionEnd;
-    const text = area.value;
-    let tag = "";
-    
-    if (type === 'pause') tag = '<break time="1s" />';
-    else if (type === 'emphasize') tag = `<emphasis level="strong">${text.substring(start, end) || 'text'}</emphasis>`;
-    
-    area.value = text.substring(0, start) + tag + text.substring(end);
-};
-
-// VCA Listener
-document.addEventListener('vca-update', (e) => {
-    const m = e.detail;
-    const panel = document.getElementById('vca-panel');
-    if(m.time) {
-        panel.classList.remove('hidden');
-        document.getElementById('vca-time').innerText = `${m.time}s`;
-        document.getElementById('vca-chars').innerText = m.chars;
-        const rtfEl = document.getElementById('vca-rtf');
-        rtfEl.innerText = m.rtf;
-        const rtfVal = parseFloat(m.rtf);
-        rtfEl.className = rtfVal < 0.3 ? "font-bold text-green-400" : "font-bold text-yellow-400";
-        panel.classList.add('animate-pulse');
-        setTimeout(() => panel.classList.remove('animate-pulse'), 500);
-    }
-});
-
-// Boot
 document.addEventListener('DOMContentLoaded', () => Controllers.boot());
