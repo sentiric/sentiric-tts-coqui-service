@@ -3,7 +3,7 @@ import shutil
 import glob
 
 # Hedef klasör (Container içindeki yol)
-SPEAKERS_DIR = "/app/speakers"
+SPEAKERS_DIR = "../sentiric-assets/docs/audio/speakers/en"
 # Demo için oluşturulacak stiller
 DEMO_STYLES = ["neutral", "happy", "sad", "angry", "whisper"]
 

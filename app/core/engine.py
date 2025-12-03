@@ -9,6 +9,7 @@ import json
 import logging
 import threading
 import gc
+import shutil
 import torchaudio
 
 from TTS.tts.configs.xtts_config import XttsConfig
@@ -50,8 +51,11 @@ class TTSEngine:
         if not self.model:
             logger.info(f"🚀 Initializing XTTS v2 Core Engine... (Device: {settings.DEVICE})")
             try:
+                # 1. Önce hoparlörleri kontrol et ve gerekirse yapılandır
                 self._ensure_fallback_speaker()
+                self._migrate_legacy_speakers()
 
+                # 2. Modeli Yükle
                 model_name = settings.MODEL_NAME
                 ModelManager().download_model(model_name)
                 model_path = os.path.join(get_user_data_dir("tts"), model_name.replace("/", "--"))
@@ -94,7 +98,7 @@ class TTSEngine:
             os.makedirs(self.SPEAKERS_DIR)
         
         has_files = False
-        for _, _, files in os.walk(self.SPEAKERS_DIR):
+        for root, dirs, files in os.walk(self.SPEAKERS_DIR):
             if any(f.endswith('.wav') for f in files):
                 has_files = True
                 break
@@ -110,6 +114,43 @@ class TTSEngine:
                 torchaudio.save(fallback_path, waveform, sample_rate)
             except Exception as e:
                 logger.error(f"❌ Failed to create fallback speaker: {e}")
+
+    def _migrate_legacy_speakers(self):
+        """
+        Mevcut düz wav dosyalarını klasör yapısına dönüştürür ve
+        'happy', 'sad', 'angry' gibi demo stiller oluşturur.
+        """
+        demo_styles = ["happy", "sad", "angry", "whisper", "shouting"]
+        wav_files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
+        
+        migrated_count = 0
+        for wav_path in wav_files:
+            filename = os.path.basename(wav_path)
+            # system_default hariç
+            if filename == "system_default.wav": continue
+            
+            speaker_name = os.path.splitext(filename)[0]
+            target_folder = os.path.join(self.SPEAKERS_DIR, speaker_name)
+            
+            if not os.path.exists(target_folder):
+                logger.info(f"📦 Auto-Migrating speaker: {speaker_name}")
+                os.makedirs(target_folder, exist_ok=True)
+                
+                # 1. Neutral (Orijinal)
+                neutral_path = os.path.join(target_folder, "neutral.wav")
+                shutil.copy2(wav_path, neutral_path)
+                
+                # 2. Demo Styles (Kopyala)
+                for style in demo_styles:
+                    shutil.copy2(wav_path, os.path.join(target_folder, f"{style}.wav"))
+                
+                # Orijinali sil (Temizlik)
+                try: os.remove(wav_path)
+                except: pass
+                migrated_count += 1
+
+        if migrated_count > 0:
+            logger.info(f"✨ Migrated {migrated_count} speakers to Multi-Style format.")
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
@@ -328,13 +369,19 @@ class TTSEngine:
         if not key: return None
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
-            try: with open(path, "rb") as f: return f.read()
-            except: return None
+            try:
+                with open(path, "rb") as f:
+                    return f.read()
+            except:
+                return None
         return None
 
     def _save_cache(self, key, data):
         if not key: return
-        try: with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: f.write(data)
-        except: pass
+        try:
+            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f:
+                f.write(data)
+        except:
+            pass
 
 tts_engine = TTSEngine()
