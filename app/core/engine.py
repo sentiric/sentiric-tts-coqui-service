@@ -35,7 +35,7 @@ class SmartMemoryManager:
         self.device = device
         self.threshold_mb = threshold_mb
         self.request_counter = 0
-        self.gc_frequency = 10 # Her 10 istekte bir zorunlu temizlik (Fragmentasyonu önlemek için)
+        self.gc_frequency = 10 
 
     def check_and_clear(self):
         if self.device != "cuda":
@@ -43,17 +43,13 @@ class SmartMemoryManager:
 
         self.request_counter += 1
         
-        # 1. Periyodik Temizlik (Soft Cleanup)
         if self.request_counter % self.gc_frequency == 0:
             self._force_clean("Periodic")
             return
 
-        # 2. Kritik Seviye Kontrolü (Hard Cleanup)
         try:
             allocated = torch.cuda.memory_allocated() / (1024 * 1024)
             reserved = torch.cuda.memory_reserved() / (1024 * 1024)
-            
-            # Eğer rezerve edilen alan 5GB'ı geçerse temizle (6GB kart için güvenli sınır)
             if reserved > self.threshold_mb:
                 self._force_clean(f"High VRAM Usage ({int(reserved)}MB)")
         except Exception:
@@ -66,7 +62,7 @@ class SmartMemoryManager:
 
 class TTSEngine:
     _instance = None
-    _gpu_lock = threading.Lock() # Sadece GPU erişimini kilitler
+    _gpu_lock = threading.Lock()
     
     SPEAKERS_DIR = "/app/speakers"
     CACHE_DIR = "/app/cache"
@@ -111,7 +107,6 @@ class TTSEngine:
                 
                 if settings.DEVICE == "cuda" and torch.cuda.is_available():
                     self.model.cuda()
-                    # 6GB VRAM için Bellek Yöneticisini Başlat (Sınır: 4.8 GB)
                     self.memory_manager = SmartMemoryManager("cuda", threshold_mb=4800)
                     logger.info("✅ Model GPU'ya yüklendi. Akıllı bellek yönetimi devrede.")
                 else:
@@ -125,14 +120,7 @@ class TTSEngine:
                 raise e
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
-        """
-        Optimize Edilmiş Sentez Akışı:
-        1. Pre-process (CPU)
-        2. Inference (GPU - Kilitli)
-        3. Post-process (CPU - Kilitsiz) -> Bu sayede GPU hemen boşa çıkar.
-        """
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
-        # Diğer parametreleri al...
         p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
         p_speed = params.get("speed", settings.DEFAULT_SPEED)
         p_top_k = params.get("top_k", settings.DEFAULT_TOP_K)
@@ -143,7 +131,6 @@ class TTSEngine:
         text = normalizer.normalize(params.get("text", ""), p_lang)
         if not text: return b""
         
-        # Cache Check (CPU)
         is_ssml = ssml_handler.is_ssml(text)
         cache_key = None
         if not is_ssml and not speaker_wavs:
@@ -154,7 +141,6 @@ class TTSEngine:
 
         raw_wav_tensor = None
 
-        # --- GPU CRITICAL SECTION (Sadece burası kilitlenir) ---
         with self._gpu_lock:
             try:
                 logger.info(f"🐢 GPU Inference: Len={len(text)} Spk={p_speaker_id}")
@@ -184,20 +170,15 @@ class TTSEngine:
                         )
                         raw_wav_tensor = torch.tensor(out["wav"])
 
-                    # Tensörü CPU'ya taşı ve GPU belleğini hemen kontrol et
                     if settings.DEVICE == "cuda": 
                         raw_wav_tensor = raw_wav_tensor.cpu()
                     
-                    # Akıllı temizlik
                     self.memory_manager.check_and_clear()
 
             except Exception as e:
                 logger.error(f"Synthesize Error: {e}")
                 return b""
-        # --- END GPU LOCK ---
 
-        # --- CPU POST-PROCESSING (Paralel çalışabilir) ---
-        # GPU şu an başka bir isteği alabilir, biz CPU'da dönüştürme yapıyoruz.
         wav_data = audio_processor.tensor_to_bytes(raw_wav_tensor)
         final_audio = audio_processor.process_audio(
             wav_data, 
@@ -212,11 +193,10 @@ class TTSEngine:
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
         """
-        Streaming işlemi sırasında Lock tutulmak ZORUNDADIR.
-        Ancak generator yield ettiği anlarda diğer threadlere (API) nefes aldırır.
+        Stream modunda 'Noise Gate' uygulanır.
+        Çok düşük genlikli (sessiz) paketler gönderilmez.
         """
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
-        # Parametreleri al (synthesize ile aynı)
         p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
         p_speed = params.get("speed", settings.DEFAULT_SPEED)
         p_top_k = params.get("top_k", settings.DEFAULT_TOP_K)
@@ -229,7 +209,6 @@ class TTSEngine:
             p_lang = langid.classify(text)[0].strip()
         if p_lang == "zh": p_lang = "zh-cn"
         
-        # Streaming için Lock mecburidir, model stateful çalışır.
         with self._gpu_lock:
             try:
                 with torch.inference_mode():
@@ -244,6 +223,12 @@ class TTSEngine:
 
                     for chunk in chunks:
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
+                        
+                        # --- NOISE GATE ---
+                        max_val = np.max(np.abs(wav_chunk_float))
+                        if max_val < 0.005:
+                            continue
+                        
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
                         yield (wav_chunk_float * 32767).astype(np.int16).tobytes()
                     
@@ -252,12 +237,6 @@ class TTSEngine:
             except Exception as e:
                 logger.error(f"Stream error: {e}")
                 yield b""
-
-    # --- Diğer yardımcı metodlar (refresh_speakers, _get_latents vb.) aynen kalır ---
-    # Kodun geri kalan kısmı değişmediği için kısaltıyorum.
-    # ... rest of helper methods ... (As per your Anti-Lazy policy, I will include full content if requested, 
-    # but since I modified the class structure, I need to include the unmodified methods to be valid executable code?
-    # NO-FLUFF POLICY dictates full content. Here are the rest.)
 
     def refresh_speakers(self, force=False):
         now = time.time()
@@ -295,13 +274,11 @@ class TTSEngine:
     def _ensure_fallback_speaker(self):
         if not os.path.exists(self.SPEAKERS_DIR):
             os.makedirs(self.SPEAKERS_DIR)
-        
         has_files = False
         for root, dirs, files in os.walk(self.SPEAKERS_DIR):
             if any(f.endswith('.wav') for f in files):
                 has_files = True
                 break
-
         if not has_files:
             fallback_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
             try:
@@ -339,7 +316,6 @@ class TTSEngine:
 
         wav_path = None
         folder_path = os.path.join(self.SPEAKERS_DIR, spk_name)
-        
         if os.path.isdir(folder_path):
             style_path = os.path.join(folder_path, f"{spk_style}.wav")
             if os.path.exists(style_path): wav_path = style_path
@@ -367,7 +343,6 @@ class TTSEngine:
             except: pass
 
         latents = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
-        
         try:
             with open(latent_file, 'w') as f: 
                 json.dump({"gpt_cond_latent": latents[0].cpu().tolist(), "speaker_embedding": latents[1].cpu().tolist()}, f)
@@ -392,14 +367,18 @@ class TTSEngine:
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
             try:
-                with open(path, "rb") as f: return f.read()
-            except: return None
+                with open(path, "rb") as f: 
+                    return f.read()
+            except: 
+                return None
         return None
 
     def _save_cache(self, key, data):
         if not key: return
-        try:
-            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: f.write(data)
-        except: pass
+        try: 
+            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: 
+                f.write(data)
+        except: 
+            pass
 
 tts_engine = TTSEngine()
