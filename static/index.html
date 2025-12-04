@@ -7,7 +7,6 @@
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="css/style.css">
     <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js"></script>
-    <!-- Font Awesome for Icons (Optional replacement for SVG but SVGs are lighter) -->
 </head>
 <body class="h-screen flex flex-col md:overflow-hidden bg-[#0a0a0c] text-gray-200 selection:bg-blue-500/30">
 
@@ -22,7 +21,7 @@
         <p id="boot-status" class="text-gray-600 text-[10px] mt-2 font-mono uppercase">Initializing Neural Core...</p>
     </div>
 
-    <!-- TOP BAR -->
+    <!-- TOP BAR (Global Settings) -->
     <div class="h-14 border-b border-white/5 flex items-center justify-between px-4 lg:px-6 bg-[#0f0f11] z-50 shrink-0">
         <div class="flex items-center gap-6">
             <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
@@ -30,7 +29,6 @@
                 SENTIRIC <span class="font-light text-gray-600 text-xs tracking-wider" id="app-version">ULTIMATE</span>
             </h1>
             
-            <!-- MODE TABS -->
             <div class="flex bg-black/50 rounded-lg p-1 border border-white/5">
                 <button onclick="switchTab('classic')" id="tab-classic" class="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded transition-all bg-blue-600 text-white shadow-[0_0_15px_rgba(37,99,235,0.3)]">Classic</button>
                 <button onclick="switchTab('studio')" id="tab-studio" class="px-4 py-1.5 text-[10px] font-bold uppercase tracking-wider rounded text-gray-500 hover:text-white transition-all">Studio</button>
@@ -74,7 +72,6 @@
                         <div class="absolute right-3 top-3.5 pointer-events-none text-gray-500 text-[10px]">▼</div>
                     </div>
                     
-                    <!-- Dynamic Style Selector -->
                     <div id="style-container" class="hidden animate-slideIn">
                         <div class="mt-2 relative">
                             <select id="style-select" class="w-full bg-blue-900/10 border border-blue-500/30 rounded-lg px-3 py-2 text-xs text-blue-400 font-bold outline-none focus:border-blue-500 appearance-none"></select>
@@ -95,13 +92,29 @@
                     </div>
                 </div>
 
-                <!-- Stream & Advanced -->
+                <!-- Stream & Advanced Toggle -->
                 <div class="pt-4 border-t border-white/5 flex items-center justify-between">
                     <div class="flex items-center gap-2 cursor-pointer" onclick="document.getElementById('stream').click()">
                         <input type="checkbox" id="stream" class="accent-green-500 w-4 h-4 rounded cursor-pointer">
                         <span class="text-[10px] uppercase font-bold text-gray-400 select-none">Stream Mode</span>
                     </div>
-                    <button class="text-[10px] text-gray-600 hover:text-white uppercase font-bold tracking-wider">Advanced +</button>
+                    <button onclick="UI.toggleAdvanced()" id="adv-toggle-btn" class="text-[10px] text-gray-600 hover:text-white uppercase font-bold tracking-wider transition-colors">Advanced +</button>
+                </div>
+
+                <!-- HIDDEN ADVANCED PANEL -->
+                <div id="advanced-panel" class="hidden space-y-4 pt-2 border-t border-white/5 bg-[#131315] -mx-5 px-5 py-4 shadow-inner">
+                    <div class="space-y-2">
+                        <div class="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-500"><span>Repetition Penalty</span> <span id="val-rep" class="text-gray-300">2.0</span></div>
+                        <input type="range" id="rep_pen" min="1.0" max="10.0" step="0.1" value="2.0" class="accent-gray-500 h-1 bg-gray-800 rounded-lg w-full appearance-none cursor-pointer">
+                    </div>
+                    <div class="space-y-2">
+                        <div class="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-500"><span>Top P</span> <span id="val-topp" class="text-gray-300">0.8</span></div>
+                        <input type="range" id="top_p" min="0.1" max="1.0" step="0.05" value="0.8" class="accent-gray-500 h-1 bg-gray-800 rounded-lg w-full appearance-none cursor-pointer">
+                    </div>
+                     <div class="space-y-2">
+                        <div class="flex justify-between text-[10px] font-bold uppercase tracking-wider text-gray-500"><span>Top K</span> <span id="val-topk" class="text-gray-300">50</span></div>
+                        <input type="range" id="top_k" min="1" max="100" step="1" value="50" class="accent-gray-500 h-1 bg-gray-800 rounded-lg w-full appearance-none cursor-pointer">
+                    </div>
                 </div>
 
             </div>
@@ -118,7 +131,6 @@
         <div class="flex-1 bg-[#050505] relative flex flex-col">
             <textarea id="textInput" class="flex-1 w-full bg-transparent p-8 text-2xl md:text-4xl font-light text-gray-200 placeholder-gray-800 outline-none resize-none leading-relaxed" placeholder="Type something amazing..."></textarea>
             
-            <!-- Visualization Footer -->
             <div class="h-24 bg-gradient-to-t from-black to-transparent flex items-end px-8 pb-8">
                 <canvas id="visualizer" class="w-full h-full opacity-50"></canvas>
                 <audio id="classicPlayer" class="hidden"></audio>
@@ -126,9 +138,8 @@
         </div>
     </div>
 
-    <!-- === STUDIO MODE (DIRECTOR EDITION) === -->
+    <!-- === STUDIO MODE === -->
     <div id="view-studio" class="hidden flex-1 flex flex-col h-full bg-[#08080a]">
-        
         <!-- Toolbar -->
         <div class="h-14 border-b border-white/5 bg-[#101012] flex items-center px-4 justify-between shrink-0 shadow-md z-30">
              <div class="flex items-center gap-4">
@@ -145,14 +156,10 @@
                      <div class="text-[9px] font-bold text-gray-600 uppercase tracking-widest">EST. DURATION</div>
                      <div class="text-xs font-mono text-blue-400" id="studio-total-time">00:00</div>
                  </div>
-
-                 <!-- Render Button -->
                  <button onclick="Studio.renderAll()" id="studio-render-btn" class="px-5 py-2 bg-gradient-to-r from-blue-600 to-purple-600 hover:brightness-110 text-white rounded font-bold text-xs shadow-lg active:scale-95 transition-all flex items-center gap-2">
                      <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
                      <span>RENDER SCENE</span>
                  </button>
-                 
-                 <!-- Download Button -->
                  <button onclick="Studio.downloadMix()" id="studio-dl-btn" class="px-4 py-2 bg-gray-800 border border-white/10 hover:bg-gray-700 text-gray-300 rounded font-bold text-xs disabled:opacity-30 transition-all flex items-center gap-2" disabled>
                      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
                      <span>MIX .WAV</span>
@@ -160,23 +167,16 @@
              </div>
         </div>
 
-        <!-- SPLIT VIEW CONTAINER -->
         <div class="flex-1 flex overflow-hidden">
-            
-            <!-- LEFT PANEL: SCRIPT EDITOR (INPUT) -->
+            <!-- Script Editor -->
             <div class="w-1/3 min-w-[300px] flex flex-col border-r border-white/5 bg-[#0a0a0c]">
                 <div class="p-3 border-b border-white/5 bg-[#131315] text-[10px] text-gray-500 font-mono flex justify-between items-center">
                     <span class="font-bold text-gray-300">SCRIPT SOURCE</span>
                     <span class="bg-blue-900/20 text-blue-400 px-2 py-0.5 rounded">Syntax: Name (Style): Text</span>
                 </div>
-                
-                <textarea id="script-source" 
-                    class="flex-1 w-full bg-transparent p-6 text-xs md:text-sm font-mono text-gray-300 placeholder-gray-700 outline-none resize-none leading-relaxed border-none focus:ring-0" 
-                    placeholder="M_TR_Heyecanli_Can (Happy): Merhaba herkese! Sentiric stüdyosuna hoş geldiniz.
-F_TR_Kurumsal_Ece (Neutral): Bugün sistemin kapasitelerini test ediyoruz.
-M_TR_Tok_Kadir (Sad): Ama kahve makinesi bozulmuş..."
-                    spellcheck="false"></textarea>
-                
+                <textarea id="script-source" class="flex-1 w-full bg-transparent p-6 text-xs md:text-sm font-mono text-gray-300 placeholder-gray-700 outline-none resize-none leading-relaxed border-none focus:ring-0" 
+                    placeholder="M_TR_Heyecanli_Can (Happy): Merhaba herkese!
+F_TR_Kurumsal_Ece (Neutral): Bugün sistemin kapasitelerini test ediyoruz." spellcheck="false"></textarea>
                 <div class="p-4 border-t border-white/5 bg-[#0a0a0c] flex justify-end">
                     <button onclick="Studio.parseFromEditor()" class="text-xs font-bold bg-gray-800 hover:bg-gray-700 border border-white/10 text-white px-4 py-2 rounded transition-all flex items-center gap-2">
                         <span>APPLY TO TIMELINE</span>
@@ -185,14 +185,9 @@ M_TR_Tok_Kadir (Sad): Ama kahve makinesi bozulmuş..."
                 </div>
             </div>
 
-            <!-- RIGHT PANEL: VISUAL TIMELINE (OUTPUT) -->
+            <!-- Visual Timeline -->
             <div class="flex-1 flex flex-col bg-[#050505] relative bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAiIGhlaWdodD0iMjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMSIgY3k9IjEiIHI9IjEiIGZpbGw9InJnYmEoMjU1LDI1NSwyNTUsMC4wNSkiLz48L3N2Zz4=')]">
-                
-                <!-- Blocks Container -->
                 <div class="flex-1 overflow-y-auto p-6 md:p-10 custom-scrollbar" id="script-container">
-                    <!-- Dynamic Blocks will appear here -->
-                    
-                    <!-- Empty State Placeholder -->
                     <div class="flex flex-col items-center justify-center mt-32 text-center opacity-30 select-none pointer-events-none">
                         <div class="w-24 h-24 rounded-full bg-gray-800 flex items-center justify-center mb-4">
                             <svg class="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M7 4v16M17 4v16M3 8h4m10 0h4M3 12h18M3 16h4m10 0h4M4 20h16a1 1 0 001-1V5a1 1 0 00-1-1H4a1 1 0 00-1 1v14a1 1 0 001 1z"></path></svg>
@@ -201,8 +196,6 @@ M_TR_Tok_Kadir (Sad): Ama kahve makinesi bozulmuş..."
                         <p class="text-gray-500 text-xs mt-2 max-w-xs font-mono">Write your script on the left panel or click below to add blocks manually.</p>
                     </div>
                 </div>
-
-                <!-- Manual Add Button (Floating) -->
                 <div class="absolute bottom-8 right-8">
                     <button onclick="Studio.addBlock()" class="w-12 h-12 bg-blue-600 hover:bg-blue-500 text-white rounded-full shadow-2xl flex items-center justify-center transition-transform hover:scale-110 active:scale-95" title="Add Empty Block">
                         <span class="text-2xl font-light mb-1">+</span>

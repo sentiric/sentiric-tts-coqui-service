@@ -8,7 +8,6 @@ class UI {
         
         // 1. Dilleri Doldur (Dinamik)
         const langSelect = $('global-lang');
-        const studioLang = $('global-lang'); // Studio modu globali kullanır
         
         if (config.limits.supported_languages) {
             langSelect.innerHTML = '';
@@ -21,10 +20,13 @@ class UI {
             });
         }
 
-        // 2. Sliderları Ayarla
+        // 2. Sliderları Ayarla (Config'den gelen varsayılanlar)
         const d = config.defaults;
         this._setupSlider('speed', d.speed, 0.25, 4.0, 0.1);
         this._setupSlider('temp', d.temperature, 0.01, 2.0, 0.05);
+        this._setupSlider('rep_pen', d.repetition_penalty, 1.0, 10.0, 0.1); // Advanced
+        this._setupSlider('top_p', d.top_p, 0.01, 1.0, 0.05); // Advanced
+        this._setupSlider('top_k', d.top_k, 1, 100, 1); // Advanced
         
         // 3. Stream Checkbox
         const streamCheck = $('stream');
@@ -39,10 +41,36 @@ class UI {
         el.step = step;
         el.value = def;
         
-        const label = $(`val-${id}`);
+        // Label'ı bul ve güncelle
+        // İsimlendirme standardı: val-{id}
+        const labelId = `val-${id.replace('_', '')}`; // rep_pen -> val-reppen uyumsuzluğu olmasın diye id'yi temizlemiyoruz, HTML'de düzgün verdik.
+        // HATA DUZELTME: HTML'de id'ler 'val-rep', 'val-topp' şeklinde. Mapping yapalım.
+        
+        let labelTarget = `val-${id}`;
+        if(id === 'rep_pen') labelTarget = 'val-rep';
+        if(id === 'top_p') labelTarget = 'val-topp';
+        if(id === 'top_k') labelTarget = 'val-topk';
+
+        const label = $(labelTarget);
         if (label) {
             label.innerText = def;
             el.addEventListener('input', (e) => label.innerText = e.target.value);
+        }
+    }
+
+    static toggleAdvanced() {
+        const panel = $('advanced-panel');
+        const btn = $('adv-toggle-btn');
+        if (panel.classList.contains('hidden')) {
+            panel.classList.remove('hidden');
+            panel.classList.add('animate-slideUp');
+            btn.innerText = "Advanced -";
+            btn.classList.add('text-blue-500');
+        } else {
+            panel.classList.add('hidden');
+            panel.classList.remove('animate-slideUp');
+            btn.innerText = "Advanced +";
+            btn.classList.remove('text-blue-500');
         }
     }
 
@@ -94,9 +122,6 @@ class UI {
             btn.disabled = false;
         }
     }
-
-    static setStatus(text) { /* legacy */ }
-    static updateLatency(ms) { /* legacy */ }
 
     static populateSpeakers(data) {
         const map = data.speakers;
@@ -152,11 +177,4 @@ class UI {
             l.appendChild(e);
         });
     }
-
-    static resetCloneUI(clearInput = true) {
-        $('fileName').innerText = "Upload Reference Audio";
-        if (clearInput) { const fileInput = $('ref_audio'); if(fileInput) fileInput.value = ''; }
-    }
-    static showRecordingSuccess() { $('fileName').innerText = "Mic Audio Ready"; }
-    static updateFileName(name) { $('fileName').innerText = name; }
 }

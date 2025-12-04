@@ -1,5 +1,5 @@
 /**
- * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.2 (Streaming Fix)
+ * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.3 (Parameters & UI Fix)
  */
 
 const State = {
@@ -113,7 +113,6 @@ const Controllers = {
         UI.setPlayingState(true);
         State.isPlaying = true;
         
-        // Ses motorunu sıfırla
         if (window.resetAudioState) window.resetAudioState();
 
         try {
@@ -129,15 +128,15 @@ const Controllers = {
                 finalSpeaker = `${spkName}/${styleSelect.value}`;
             }
 
-            // Params
+            // GÜNCELLEME: Advanced Parametrelerin Okunması
             const params = {
                 text: text,
                 language: document.getElementById('global-lang').value || 'en',
                 temperature: parseFloat(document.getElementById('temp').value),
                 speed: parseFloat(document.getElementById('speed').value),
-                top_k: 50,
-                top_p: 0.8,
-                repetition_penalty: 2.0,
+                top_k: parseInt(document.getElementById('top_k').value) || 50,
+                top_p: parseFloat(document.getElementById('top_p').value) || 0.8,
+                repetition_penalty: parseFloat(document.getElementById('rep_pen').value) || 2.0,
                 stream: document.getElementById('stream').checked,
                 output_format: 'wav',
                 speaker_idx: finalSpeaker,
@@ -149,7 +148,6 @@ const Controllers = {
                  const response = await API.generateTTS(params, State.abortController.signal);
                  const reader = response.body.getReader();
                  
-                 // PCM Parsing için Buffer Hizalama
                  let leftover = new Uint8Array(0);
 
                  while (true) {
@@ -157,34 +155,26 @@ const Controllers = {
                      if (done) break;
                      
                      if (value && value.length > 0) {
-                         // Önceki artıkları yeni veriye ekle
                          const chunk = new Uint8Array(leftover.length + value.length);
                          chunk.set(leftover);
                          chunk.set(value, leftover.length);
 
-                         // Byte hizalama (Int16 için 2'nin katı olmalı)
                          const remainder = chunk.length % 2;
                          const processData = chunk.subarray(0, chunk.length - remainder);
                          leftover = chunk.subarray(chunk.length - remainder);
 
-                         // PCM (Int16) -> Float32 Conversion
                          const int16Data = new Int16Array(processData.buffer);
                          const float32Data = new Float32Array(int16Data.length);
                          
-                         // Normalizasyon loop'u (Browser native performansı yeterli)
                          for (let i = 0; i < int16Data.length; i++) {
-                             // Int16 max değeri 32768. -1.0 ile 1.0 arasına çekiyoruz.
                              float32Data[i] = int16Data[i] / 32768.0;
                          }
 
-                         // Audio Core'a gönder (Hemen çalar)
                          if (window.playChunk) {
                              await window.playChunk(float32Data, params.sample_rate);
                          }
                      }
                  }
-                 
-                 // İşlem bitince history güncelle
                  await this.loadHistory();
                  
             } else {
@@ -195,7 +185,6 @@ const Controllers = {
                 const player = document.getElementById('classicPlayer');
                 player.src = url;
                 player.play();
-                
                 await this.loadHistory();
             }
 
