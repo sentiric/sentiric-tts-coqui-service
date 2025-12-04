@@ -9,6 +9,7 @@ import uuid
 import logging
 import time
 import langid
+import torch  # <--- EKLENDİ: VRAM kontrolü için gerekli
 
 from app.core.engine import tts_engine
 from app.core.config import settings
@@ -22,7 +23,6 @@ UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
-# --- CONFIGURATION & CONSTANTS ---
 SUPPORTED_LANGUAGES = ["en", "es", "fr", "de", "it", "pt", "pl", "tr", "ru", "nl", "cs", "ar", "zh-cn", "ja", "hu", "ko"]
 LANGUAGE_NAMES = {
     "tr": "Turkish", "en": "English", "es": "Spanish", "fr": "French", 
@@ -33,23 +33,18 @@ LANGUAGE_NAMES = {
 
 # --- HELPERS ---
 async def cleanup_files(file_paths: List[str]):
-    """Geçici dosyaları güvenli bir şekilde temizler."""
     for path in file_paths:
         try:
             if os.path.exists(path):
                 await asyncio.to_thread(os.remove, path)
-                logger.debug(f"Deleted temp file: {path}")
         except Exception as e:
             logger.warning(f"Failed to cleanup {path}: {e}")
 
 def calculate_vca_metrics(start_time, char_count, audio_bytes, sample_rate=24000):
-    """
-    Telemetri başlıkları için metrikleri hesaplar.
-    VCA: Voice Cloud Architecture standartları.
-    """
     process_time = time.perf_counter() - start_time
-    # 16-bit PCM = 2 bytes per sample
-    audio_duration_sec = len(audio_bytes) / (sample_rate * 2) 
+    # Audio bytes yoksa (streaming) 0 kabul et
+    len_bytes = len(audio_bytes) if audio_bytes else 0
+    audio_duration_sec = len_bytes / (sample_rate * 2) 
     rtf = process_time / audio_duration_sec if audio_duration_sec > 0 else 0
     
     return {
@@ -67,20 +62,19 @@ async def favicon():
     
 @router.get("/health")
 async def health_check():
-    """K8s/Docker Healthcheck"""
     return {
         "status": "ok", 
         "device": settings.DEVICE, 
         "model_loaded": tts_engine.model is not None,
         "version": settings.APP_VERSION,
-        "mode": "standalone" if settings.API_KEY else "cluster"
+        "mode": "standalone" if settings.API_KEY else "cluster",
+        # Memory Manager Stats
+        "vram_allocated_mb": int(torch.cuda.memory_allocated() / (1024*1024)) if torch.cuda.is_available() else 0
     }
 
 @router.get("/api/config")
 async def get_public_config():
-    """Frontend ve Gateway için yetenek haritası"""
     langs = [{"code": code, "name": LANGUAGE_NAMES.get(code, code.upper())} for code in SUPPORTED_LANGUAGES]
-    
     return {
         "app_name": settings.APP_NAME,
         "version": settings.APP_VERSION,
@@ -122,20 +116,16 @@ async def get_history_audio(filename: str):
 @router.delete("/api/history/all")
 async def delete_all_history():
     history_manager.clear_all()
-    deleted_count = 0
     for f in glob.glob(os.path.join(HISTORY_DIR, "*")):
         if "history.db" not in f: 
-            try: 
-                os.remove(f)
-                deleted_count += 1
+            try: os.remove(f)
             except: pass
-    return {"status": "cleared", "count": deleted_count}
+    return {"status": "cleared"}
 
 @router.delete("/api/history/{filename}")
 async def delete_history_entry(filename: str):
     history_manager.delete_entry(filename)
-    try: 
-        os.remove(os.path.join(HISTORY_DIR, filename))
+    try: os.remove(os.path.join(HISTORY_DIR, filename))
     except: pass
     return {"status": "deleted"}
 
@@ -148,7 +138,6 @@ async def get_speakers():
 
 @router.post("/api/speakers/refresh")
 async def refresh_speakers_cache():
-    # Force parametresi ile diskten taze okuma yap
     report = await asyncio.to_thread(tts_engine.refresh_speakers, force=True)
     return {"status": "ok", "data": report}
 
@@ -164,21 +153,19 @@ async def generate_speech(request: TTSRequest):
         params = request.model_dump()
         
         if request.stream:
-            # Streaming modunda RTF hesaplaması stream bitince client tarafında yapılır
-            # veya loglara daha sonra yazılır. Header olarak hemen dönemeyiz.
+            # Doğrudan Engine generator'ını kullan
             return StreamingResponse(
                 tts_engine.synthesize_stream(params), 
                 media_type="application/octet-stream",
                 headers={"X-Stream-Start": str(start_time)}
             )
         else:
-            # CPU Blocking işlemi thread'e taşıyoruz
+            # CPU Blocking işlemi thread'e taşıyoruz (Non-blocking server)
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             
-            # Telemetri Hesapla
+            # Telemetri
             metrics = calculate_vca_metrics(start_time, len(request.text), audio_bytes, request.sample_rate)
             
-            # Loglama (Structured Log)
             logger.info("usage.recorded", extra={
                 "event_type": "tts_generation",
                 "char_count": len(request.text),
@@ -187,21 +174,20 @@ async def generate_speech(request: TTSRequest):
                 "mode": "standard"
             })
 
-            # Format Belirleme
             ext = "wav"
             media_type = "audio/wav"
             if request.output_format == "mp3": ext="mp3"; media_type="audio/mpeg"
             elif request.output_format == "opus": ext="opus"; media_type="audio/ogg"
             elif request.output_format == "pcm": ext="pcm"; media_type="application/octet-stream"
             
-            # History Kaydı
             filename = f"tts_{uuid.uuid4()}.{ext}"
             filepath = os.path.join(HISTORY_DIR, filename)
+            
+            # Disk I/O Blocking önle
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             
             history_manager.add_entry(filename, request.text, request.speaker_idx, "Standard")
             
-            # Yanıt (Headerlar ile birlikte)
             final_response = Response(content=audio_bytes, media_type=media_type)
             for k, v in metrics.items():
                 final_response.headers[k] = v
@@ -217,7 +203,6 @@ async def generate_speech_clone(
     text: str = Form(...),
     language: str = Form(settings.DEFAULT_LANGUAGE),
     files: List[UploadFile] = File(...),
-    # Opsiyonel Parametreler
     temperature: float = Form(settings.DEFAULT_TEMPERATURE),
     speed: float = Form(settings.DEFAULT_SPEED),
     top_k: int = Form(settings.DEFAULT_TOP_K),
@@ -233,16 +218,12 @@ async def generate_speech_clone(
     saved_files = []
     
     try:
-        # 1. Dosyaları Kaydet
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")
-            
-            # Blocking IO önlemek için thread içinde kaydet
             def save_upload(src_file, dst_path):
                 with open(dst_path, "wb") as buffer:
                     shutil.copyfileobj(src_file, buffer)
-            
             await asyncio.to_thread(save_upload, file.file, file_path)
             saved_files.append(file_path)
             
@@ -250,19 +231,16 @@ async def generate_speech_clone(
             "text": text, "language": language, "temperature": temperature,
             "speed": speed, "top_k": top_k, "top_p": top_p,
             "repetition_penalty": repetition_penalty, "output_format": output_format, 
-            "speaker_idx": None, # Clone modunda speaker_idx yok
+            "speaker_idx": None, 
             "sample_rate": 24000
         }
         
-        # 2. Sentezleme
         if stream:
             async def stream_with_cleanup():
                 try:
-                    # Generator'dan yield et
                     for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
                         yield chunk
                 finally:
-                    # Stream bitince veya hata alınca temizle
                     await cleanup_files(saved_files)
             
             return StreamingResponse(
@@ -271,23 +249,11 @@ async def generate_speech_clone(
                 headers={"X-Stream-Start": str(start_time)}
             )
         else:
-            # Full sentez
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params, speaker_wavs=saved_files)
-            
-            # 3. Temizlik (Cleanup)
             await cleanup_files(saved_files)
             
-            # 4. Telemetri (VCA Headers - Geri Getirildi)
             metrics = calculate_vca_metrics(start_time, len(text), audio_bytes)
             
-            logger.info("usage.recorded", extra={
-                "event_type": "tts_clone",
-                "char_count": len(text),
-                "rtf": metrics["X-VCA-RTF"],
-                "mode": "clone"
-            })
-            
-            # 5. Dosya Kaydetme (History)
             ext = output_format if output_format != "pcm" else "wav"
             if ext == "opus": ext = "ogg"
             filename = f"clone_{uuid.uuid4()}.{ext}"
@@ -295,18 +261,15 @@ async def generate_speech_clone(
             await asyncio.to_thread(lambda: open(filepath, "wb").write(audio_bytes))
             history_manager.add_entry(filename, text, "Cloned Voice", "Cloning")
             
-            # 6. Yanıt
             media_type = "audio/wav"
             if output_format == "mp3": media_type = "audio/mpeg"
             
             final_response = Response(content=audio_bytes, media_type=media_type)
             for k, v in metrics.items():
                 final_response.headers[k] = v
-                
             return final_response
             
     except Exception as e:
-        # Hata durumunda da temizlik yapıldığından emin ol
         await cleanup_files(saved_files)
         logger.error(f"Clone Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -316,14 +279,14 @@ async def generate_speech_clone(
 @router.post("/v1/audio/speech")
 async def openai_speech_endpoint(request: OpenAISpeechRequest):
     """
-    OpenAI uyumlu endpoint. Artık tam metrik döndürüyor.
+    OpenAI uyumlu endpoint. (Streaming destekler)
     """
     if not request.input or not request.input.strip():
         raise HTTPException(status_code=422, detail="Input text cannot be empty.")
 
     start_time = time.perf_counter()
 
-    # Speaker Mapping (Gelişmiş)
+    # Speaker Mapping
     available_speakers = tts_engine.get_speakers()
     flat_speakers = {}
     for name, styles in available_speakers.items():
@@ -334,36 +297,29 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
     requested_voice = request.voice.lower()
     target_speaker = settings.DEFAULT_SPEAKER
 
-    # 1. Doğrudan eşleşme veya Mapping
     if requested_voice in flat_speakers:
         target_speaker = flat_speakers[requested_voice]
     else:
-        # OpenAI Map
         voice_map = {
-            "alloy": "F_Narrator_Linda",
-            "echo": "M_News_Bill",
-            "shimmer": "F_Calm_Ana",
-            "onyx": "M_Deep_Damien",
-            "nova": "F_Assistant_Judy",
-            "fable": "M_Story_Telling",
+            "alloy": "F_Narrator_Linda", "echo": "M_News_Bill",
+            "shimmer": "F_Calm_Ana", "onyx": "M_Deep_Damien",
+            "nova": "F_Assistant_Judy", "fable": "M_Story_Telling",
         }
         mapped_key = voice_map.get(requested_voice)
         if mapped_key and mapped_key.lower() in flat_speakers:
             target_speaker = flat_speakers[mapped_key.lower()]
 
-    # Format Map
     output_fmt = request.response_format
     if output_fmt == "aac": output_fmt = "mp3"
     if output_fmt == "flac": output_fmt = "wav"
 
-    # Dil Algılama
+    detected_lang = settings.DEFAULT_LANGUAGE
     try:
         detected_lang, _ = langid.classify(request.input)
         if detected_lang == "zh": detected_lang = "zh-cn"
         if detected_lang not in SUPPORTED_LANGUAGES:
             detected_lang = settings.DEFAULT_LANGUAGE 
-    except:
-        detected_lang = settings.DEFAULT_LANGUAGE
+    except: pass
 
     params = {
         "text": request.input,
@@ -372,24 +328,35 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         "temperature": settings.DEFAULT_TEMPERATURE,
         "speed": request.speed,
         "output_format": output_fmt,
-        "stream": False 
+        "stream": False # Varsayılan false, aşağıda karar verilecek
     }
 
     try:
-        audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
+        # OpenAI Streaming Check (Standard dışı olsa da bazı clientlar stream=true gönderir)
+        # Ancak OpenAI Speech API'sinde resmi olarak 'stream' parametresi yoktur, yanıtı stream olarak beklerler.
+        # Sentiric implementasyonunda: varsayılan olarak non-stream, ancak client stream isterse destekleriz.
+        # Not: OpenAI istemcileri genellikle normal bir POST atar ve chunked response bekler.
         
-        # VCA Metrics for OpenAI Endpoint too (Observability için kritik)
-        metrics = calculate_vca_metrics(start_time, len(request.input), audio_bytes)
+        # Bu endpoint'i daima streaming olarak çalıştırmak latency için iyidir, ancak 
+        # format dönüşümü (MP3) streaming sırasında zordur (ffmpeg pipe gerekir).
+        # Şimdilik: Eğer format PCM ise stream yap, yoksa full process.
         
-        media_type = "audio/mpeg" if output_fmt == "mp3" else \
-                     "audio/ogg" if output_fmt == "opus" else \
-                     "audio/wav"
-
-        final_response = Response(content=audio_bytes, media_type=media_type)
-        for k, v in metrics.items():
-            final_response.headers[k] = v
-            
-        return final_response
+        # [CRITICAL DECISION] OpenAI clientları genellikle MP3 ister. MP3 streaming için FFmpeg pipe 
+        # karmaşıklığına girmek riskli. Şimdilik "Hızlı Tepki" için PCM/WAV ise stream, MP3 ise blok.
+        
+        should_stream = output_fmt in ["pcm", "wav"]
+        
+        if should_stream:
+            params["stream"] = True
+            params["output_format"] = "pcm" # Stream daima PCM basar
+            return StreamingResponse(
+                tts_engine.synthesize_stream(params),
+                media_type="audio/pcm"
+            )
+        else:
+            audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
+            media_type = "audio/mpeg" if output_fmt == "mp3" else "audio/wav"
+            return Response(content=audio_bytes, media_type=media_type)
 
     except Exception as e:
         logger.error(f"OpenAI API Adapter Error: {e}", exc_info=True)
@@ -398,12 +365,10 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
 @router.get("/v1/models")
 async def list_models():
     speakers = tts_engine.get_speakers()
-    
     models_data = [
         {"id": "tts-1", "object": "model", "created": 1234567890, "owned_by": "sentiric-tts"},
         {"id": "tts-1-hd", "object": "model", "created": 1234567890, "owned_by": "sentiric-tts"}
     ]
-    
     for spk_name in speakers.keys():
         models_data.append({
             "id": spk_name,
@@ -411,8 +376,4 @@ async def list_models():
             "created": 1234567890,
             "owned_by": "sentiric-local"
         })
-
-    return {
-        "object": "list",
-        "data": models_data
-    }
+    return {"object": "list", "data": models_data}
