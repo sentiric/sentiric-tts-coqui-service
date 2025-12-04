@@ -3,6 +3,7 @@ import logging
 import io
 import torchaudio
 import torch
+import wave
 
 logger = logging.getLogger("AUDIO-PROC")
 
@@ -18,6 +19,25 @@ class AudioProcessor:
         return buffer.read()
 
     @staticmethod
+    def raw_pcm_to_wav(pcm_bytes: bytes, sample_rate: int = 24000) -> bytes:
+        """
+        Ham PCM (Int16) verisine RIFF WAV Header ekler.
+        Bu işlem tarayıcıların dosyayı 'audio/wav' olarak tanıması için zorunludur.
+        """
+        try:
+            buffer = io.BytesIO()
+            with wave.open(buffer, 'wb') as wav_file:
+                wav_file.setnchannels(1)      # Mono
+                wav_file.setsampwidth(2)      # 16-bit (2 bytes)
+                wav_file.setframerate(sample_rate)
+                wav_file.writeframes(pcm_bytes)
+            
+            return buffer.getvalue()
+        except Exception as e:
+            logger.error(f"PCM to WAV conversion failed: {e}")
+            return pcm_bytes # Fallback (Yine de kaydetmeyi dene)
+
+    @staticmethod
     def process_audio(wav_bytes: bytes, format: str, sample_rate: int, add_silence: bool = False) -> bytes:
         try:
             cmd = ['ffmpeg', '-y', '-f', 'wav', '-i', 'pipe:0']
@@ -25,16 +45,10 @@ class AudioProcessor:
             filters = []
             
             if add_silence:
-                filters.append('adelay=50|50') # Gecikmeyi minimize ettim (50ms)
+                filters.append('adelay=50|50') 
             
             # --- SES MASTERING ZİNCİRİ ---
-            
-            # 1. EQ: Sese tokluk kat (Bass Boost: 100Hz frekansını +2dB artır)
-            # Hızlı konuşmada (1.25x) ses inceldiği için bu dengeyi sağlar.
             filters.append('bass=g=2:f=100:w=0.5')
-            
-            # 2. Normalizasyon: EBU R128 standardı (Yayın kalitesi)
-            # Target Loudness: -18 LUFS (Podcasting standardına yakın)
             filters.append('loudnorm=I=-18:TP=-1.5:LRA=11')
             
             cmd += ['-af', ','.join(filters)]

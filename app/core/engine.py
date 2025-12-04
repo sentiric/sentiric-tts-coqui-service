@@ -27,10 +27,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("XTTS-ENGINE")
 
 class SmartMemoryManager:
-    """
-    6GB VRAM Optimus Prime:
-    Her istekte çöp toplamak (GC) yerine, sadece gerektiğinde temizlik yapar.
-    """
     def __init__(self, device: str, threshold_mb: int = 5000):
         self.device = device
         self.threshold_mb = threshold_mb
@@ -39,13 +35,10 @@ class SmartMemoryManager:
 
     def check_and_clear(self):
         if self.device != "cuda": return
-
         self.request_counter += 1
-        
         if self.request_counter % self.gc_frequency == 0:
             self._force_clean("Periodic")
             return
-
         try:
             allocated = torch.cuda.memory_allocated() / (1024 * 1024)
             reserved = torch.cuda.memory_reserved() / (1024 * 1024)
@@ -117,29 +110,17 @@ class TTSEngine:
                 raise e
 
     def _prepare_inference(self, params: dict, speaker_wavs=None) -> Dict[str, Any]:
-        """
-        DRY PRENSİBİ: Ortak hazırlık işlemleri burada yapılır.
-        """
-        # 1. Parametreleri Çıkar
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
         text = normalizer.normalize(params.get("text", ""), p_lang)
-        
-        # Dil Otomatik Algılama
         if not p_lang or p_lang == "auto":
-            try:
-                p_lang = langid.classify(text)[0].strip()
-            except:
-                p_lang = settings.DEFAULT_LANGUAGE
+            try: p_lang = langid.classify(text)[0].strip()
+            except: p_lang = settings.DEFAULT_LANGUAGE
         if p_lang == "zh": p_lang = "zh-cn"
 
-        # 2. Speaker Latents (Cache veya Hesaplama)
         p_speaker_id = params.get("speaker_idx", settings.DEFAULT_SPEAKER)
-        
-        # GPU'da bellek yönetimi öncesi hazırlık
         gpt_cond_latent, speaker_embedding = self._get_latents(p_speaker_id, speaker_wavs)
 
-        # 3. Konfigürasyon Sözlüğü Hazırla
-        inference_config = {
+        return {
             "text": text,
             "language": p_lang,
             "gpt_cond_latent": gpt_cond_latent,
@@ -150,14 +131,12 @@ class TTSEngine:
             "top_p": params.get("top_p", settings.DEFAULT_TOP_P),
             "repetition_penalty": params.get("repetition_penalty", settings.DEFAULT_REPETITION_PENALTY),
         }
-        
-        return inference_config
 
-    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.015, fade_len: int = 1200) -> torch.Tensor:
+    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
         """
-        GHOST ARTIFACT KILLER v2 (Fade-Out Edition):
-        Sesi kesmek yerine, sonundaki gürültüyü tespit edip yumuşakça sönümlendirir (Fade-Out).
-        fade_len: 1200 sample ~ 50ms (24kHz'de)
+        GHOST ARTIFACT KILLER v3 (Aggressive Edition):
+        Threshold 0.015 -> 0.025 yükseltildi.
+        Fade Length 1200 -> 2400 (~100ms) yapıldı.
         """
         if wav_tensor.numel() == 0: return wav_tensor
         if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
@@ -165,47 +144,35 @@ class TTSEngine:
         wav_np = wav_tensor.numpy()
         abs_wav = np.abs(wav_np)
         
-        # 1. Threshold üzerindeki son indeksi bul
+        # 1. Reverse Scan: Sondan başa doğru threshold'u geçen İLK güçlü sinyali bul
         mask = abs_wav > threshold
-        if not np.any(mask): return wav_tensor # Tamamen sessiz
+        if not np.any(mask): return wav_tensor 
             
         last_index = len(mask) - 1 - np.argmax(mask[::-1])
         
-        # 2. Kesim noktası belirle (Son sesten biraz ileri)
+        # 2. Kesim: Son güçlü sinyalden sonraki fade_len kadar alanı tut, gerisini at.
+        # Bu, eğer sonda "pıt" varsa ve threshold'un altındaysa, onu tamamen kesecektir.
         cut_index = min(last_index + fade_len, len(wav_np))
         trimmed_wav = wav_np[:cut_index]
         
-        # 3. FADE OUT UYGULA (Keskin bitişi engeller, pıt sesini yok eder)
+        # 3. Fade Out
         if len(trimmed_wav) > fade_len:
-            # 1.0'dan 0.0'a inen bir dizi oluştur
             fade_curve = np.linspace(1.0, 0.0, fade_len)
-            # Son n sample'ı bu eğriyle çarp
             trimmed_wav[-fade_len:] *= fade_curve
 
         return torch.from_numpy(trimmed_wav)
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
-        # Cache Kontrolü (SSML değilse)
-        text = params.get("text", "")
-        if not ssml_handler.is_ssml(text) and not speaker_wavs:
-            # Basit parametrelerle cache key oluştur
-            cache_key = self._generate_cache_key({**params, "text": text})
-            cached = self._check_cache(cache_key)
-            if cached: return cached
-
-        raw_wav_tensor = None
-        
-        # Ortak hazırlık fonksiyonunu çağır (DRY)
-        # SSML durumunda text ham haliyle alınır, parse içeride yapılır
+        # Cache mantığı artık Hash tabanlı API tarafında yönetilecek, 
+        # ancak Engine içi cache (Hızlı erişim) kalabilir.
         conf = self._prepare_inference(params, speaker_wavs)
 
         with self._gpu_lock:
             try:
-                logger.info(f"🐢 GPU Inference: Len={len(conf['text'])}")
+                # logger.info(f"🐢 GPU Inference: Len={len(conf['text'])}") 
+                # (Log kirliliğini azaltmak için kapattım, sadece API loglasın)
                 with torch.inference_mode():
-                    
                     if ssml_handler.is_ssml(conf['text']):
-                        # SSML Logic (Parçalı Sentez)
                         segments = ssml_handler.parse(conf['text'], params)
                         wav_chunks = []
                         for segment in segments:
@@ -221,7 +188,6 @@ class TTSEngine:
                                 wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
                         raw_wav_tensor = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
                     else:
-                        # Standard Logic
                         out = self.model.inference(
                             conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
                             temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
@@ -236,7 +202,6 @@ class TTSEngine:
                 logger.error(f"Synthesize Error: {e}")
                 return b""
 
-        # Cleanup & Fade Out
         cleaned_tensor = self._clean_and_trim_tensor(raw_wav_tensor)
         
         wav_data = audio_processor.tensor_to_bytes(cleaned_tensor)
@@ -244,18 +209,11 @@ class TTSEngine:
             wav_data, 
             params.get("output_format", settings.DEFAULT_OUTPUT_FORMAT), 
             params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE),
-            add_silence=False # Fade out yaptık, silence ekleme
+            add_silence=False
         )
-        
-        # Cache'e yaz
-        if not ssml_handler.is_ssml(text) and not speaker_wavs:
-            cache_key = self._generate_cache_key({**params, "text": text})
-            self._save_cache(cache_key, final_audio)
-        
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
-        # Ortak hazırlık (DRY)
         conf = self._prepare_inference(params, speaker_wavs)
         
         with self._gpu_lock:
@@ -270,8 +228,7 @@ class TTSEngine:
 
                     for chunk in chunks:
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
-                        
-                        # Noise Gate (Stream için basit filtre)
+                        # Stream Noise Gate (Sert Kesim)
                         max_val = np.max(np.abs(wav_chunk_float))
                         if max_val < 0.005: continue
                         
@@ -324,7 +281,6 @@ class TTSEngine:
         if not has_files:
             fallback_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
             try:
-                # Sine wave generation
                 sr = 24000; d = 2.0
                 t = torch.linspace(0, d, int(sr * d))
                 waveform = torch.sin(2 * torch.pi * 220 * t).unsqueeze(0)
@@ -387,29 +343,11 @@ class TTSEngine:
         if settings.DEVICE == "cuda" and torch.cuda.is_available():
             g, s = g.cuda(), s.cuda()
         return g, s
-        
-    def _generate_cache_key(self, params):
-        if params.get("speaker_wavs"): return None
-        key_data = {k:v for k,v in params.items() if k in ["text", "lang", "speaker_idx", "temperature", "speed", "output_format", "sample_rate"]}
-        return hashlib.md5(json.dumps(key_data, sort_keys=True).encode()).hexdigest()
 
-    def _check_cache(self, key):
-        if not key: return None
-        path = os.path.join(self.CACHE_DIR, f"{key}.bin")
-        if os.path.exists(path):
-            try: 
-                with open(path, "rb") as f: 
-                    return f.read()
-            except: 
-                return None
-        return None
-
-    def _save_cache(self, key, data):
-        if not key: return
-        try: 
-            with open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb") as f: 
-                f.write(data)
-        except: 
-            pass
+    # Eski cache metodlarını hash tabanlı yapıya uyum için kaldırıyoruz veya boş bırakıyoruz
+    # Artık API katmanı hash hesaplayacak.
+    def _generate_cache_key(self, params): return None 
+    def _check_cache(self, key): return None
+    def _save_cache(self, key, data): pass
 
 tts_engine = TTSEngine()
