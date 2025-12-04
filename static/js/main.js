@@ -1,5 +1,5 @@
 /**
- * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.0
+ * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.2 (Streaming Fix)
  */
 
 const State = {
@@ -113,9 +113,8 @@ const Controllers = {
         UI.setPlayingState(true);
         State.isPlaying = true;
         
+        // Ses motorunu sıfırla
         if (window.resetAudioState) window.resetAudioState();
-
-        const startTime = performance.now();
 
         try {
             State.abortController = new AbortController();
@@ -133,42 +132,72 @@ const Controllers = {
             // Params
             const params = {
                 text: text,
-                language: document.getElementById('global-lang').value || 'en', // Global Lang Selector
+                language: document.getElementById('global-lang').value || 'en',
                 temperature: parseFloat(document.getElementById('temp').value),
                 speed: parseFloat(document.getElementById('speed').value),
                 top_k: 50,
                 top_p: 0.8,
                 repetition_penalty: 2.0,
-                stream: document.getElementById('stream').checked, // Stream Toggle
+                stream: document.getElementById('stream').checked,
                 output_format: 'wav',
                 speaker_idx: finalSpeaker,
                 sample_rate: State.config ? State.config.defaults.sample_rate : 24000 
             };
 
-            let response;
-            
-            // Streaming Logic
+            // --- STREAMING LOGIC ---
             if (params.stream) {
-                 response = await API.generateTTS(params, State.abortController.signal);
+                 const response = await API.generateTTS(params, State.abortController.signal);
                  const reader = response.body.getReader();
-                 // ... Audio Core Streaming Logic would be handled here ... 
-                 // For now reusing the simpler logic for robustness:
-                 // Note: Real streaming implementation requires more code in audio-core.js
-                 // Using blob fallback if user selected stream but UI logic simplifies it
-            } 
-            
-            // Standard (Non-Stream for now to ensure stability as requested)
-            // Override stream to false until audio-core streaming is fully robust
-            params.stream = false; 
-            response = await API.generateTTS(params, State.abortController.signal);
+                 
+                 // PCM Parsing için Buffer Hizalama
+                 let leftover = new Uint8Array(0);
 
-            const blob = await response.blob();
-            const url = URL.createObjectURL(blob);
-            const player = document.getElementById('classicPlayer');
-            player.src = url;
-            player.play();
-            
-            await this.loadHistory();
+                 while (true) {
+                     const { done, value } = await reader.read();
+                     if (done) break;
+                     
+                     if (value && value.length > 0) {
+                         // Önceki artıkları yeni veriye ekle
+                         const chunk = new Uint8Array(leftover.length + value.length);
+                         chunk.set(leftover);
+                         chunk.set(value, leftover.length);
+
+                         // Byte hizalama (Int16 için 2'nin katı olmalı)
+                         const remainder = chunk.length % 2;
+                         const processData = chunk.subarray(0, chunk.length - remainder);
+                         leftover = chunk.subarray(chunk.length - remainder);
+
+                         // PCM (Int16) -> Float32 Conversion
+                         const int16Data = new Int16Array(processData.buffer);
+                         const float32Data = new Float32Array(int16Data.length);
+                         
+                         // Normalizasyon loop'u (Browser native performansı yeterli)
+                         for (let i = 0; i < int16Data.length; i++) {
+                             // Int16 max değeri 32768. -1.0 ile 1.0 arasına çekiyoruz.
+                             float32Data[i] = int16Data[i] / 32768.0;
+                         }
+
+                         // Audio Core'a gönder (Hemen çalar)
+                         if (window.playChunk) {
+                             await window.playChunk(float32Data, params.sample_rate);
+                         }
+                     }
+                 }
+                 
+                 // İşlem bitince history güncelle
+                 await this.loadHistory();
+                 
+            } else {
+                // --- STANDART (NON-STREAM) ---
+                const response = await API.generateTTS(params, State.abortController.signal);
+                const blob = await response.blob();
+                const url = URL.createObjectURL(blob);
+                const player = document.getElementById('classicPlayer');
+                player.src = url;
+                player.play();
+                
+                await this.loadHistory();
+            }
 
         } catch (err) {
             if (err.name !== 'AbortError') {
@@ -176,7 +205,6 @@ const Controllers = {
                 UI.showToast(err.message, "error");
             }
         } finally {
-            // CRITICAL FIX: Ensure button is reset
             this.stopPlayback(false);
         }
     }
