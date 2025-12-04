@@ -14,7 +14,10 @@ function initAudioContext() {
         analyser.smoothingTimeConstant = 0.8;
         initVisualizer();
     }
-    if (window._audioContext.state === 'suspended') { window._audioContext.resume(); }
+    // ÖNEMLİ: Tarayıcının context'i askıya almasını (suspend) engellemek için her seferinde resume dene
+    if (window._audioContext.state === 'suspended') { 
+        window._audioContext.resume().catch(e => console.warn("Audio resume failed", e)); 
+    }
 }
 
 function notifyDownloadFinished() {
@@ -28,26 +31,37 @@ function checkIfPlaybackFinished() {
     }
 }
 
-// sampleRate artık parametre olarak geliyor
 async function playChunk(float32Array, sampleRate) {
+    // 1. Context'in hazır olduğundan emin ol
     initAudioContext();
     if (window.isStopRequested) return;
 
     const ctx = window._audioContext;
     
-    // Dinamik sample rate kullanımı
+    // 2. Buffer Oluştur
     const buffer = ctx.createBuffer(1, float32Array.length, sampleRate || 24000);
     buffer.getChannelData(0).set(float32Array);
     
+    // 3. Source Oluştur
     const source = ctx.createBufferSource();
     source.buffer = buffer;
     source.connect(analyser);
     analyser.connect(ctx.destination);
     
+    // 4. JITTER BUFFERING / GAPLESS PLAYBACK MANTIĞI
     const currentTime = ctx.currentTime;
-    if (nextStartTime < currentTime) nextStartTime = currentTime;
+    
+    // Eğer nextStartTime geçmişte kaldıysa (takılma olduysa), resetle ve hemen başlat.
+    // Ancak çok küçük gecikmeler (0.1s) tolere edilebilir.
+    if (nextStartTime < currentTime) {
+        nextStartTime = currentTime + 0.05; // 50ms ön-tampon (Anti-pop)
+    }
 
     source.start(nextStartTime);
+    
+    // Bir sonraki parçanın başlama zamanını güncelle
+    nextStartTime += buffer.duration;
+    
     sourceNodes.push(source);
     
     source.onended = () => {
@@ -55,28 +69,32 @@ async function playChunk(float32Array, sampleRate) {
         if (index > -1) sourceNodes.splice(index, 1);
         checkIfPlaybackFinished();
     };
-
-    nextStartTime += buffer.duration;
 }
 
 function resetAudioState() {
     window.isStopRequested = true;
     isDownloadFinished = false;
-    sourceNodes.forEach(node => { try { node.stop(); node.disconnect(); } catch(e) {} });
+    
+    // Tüm aktif sesleri durdur
+    sourceNodes.forEach(node => { 
+        try { node.stop(); node.disconnect(); } catch(e) {} 
+    });
     sourceNodes = [];
     nextStartTime = 0;
-    setTimeout(() => { window.isStopRequested = false; }, 200);
+    
+    // Context'i kapatma, sadece durumu sıfırla. 
+    // Context kapatılırsa (close), tekrar oluşturmak maliyetlidir.
+    
+    setTimeout(() => { window.isStopRequested = false; }, 100);
 }
 
-// Visualizer Logic
+// Visualizer (Değişmedi)
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
     const ctx = canvas.getContext('2d');
-    
     function resize() { canvas.width = canvas.offsetWidth; canvas.height = canvas.offsetHeight; }
     window.addEventListener('resize', resize); resize();
-    
     function draw() {
         requestAnimationFrame(draw);
         if(!analyser) return;
@@ -84,7 +102,6 @@ function initVisualizer() {
         const dataArray = new Uint8Array(bufferLength);
         analyser.getByteFrequencyData(dataArray);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        
         const barWidth = (canvas.width / bufferLength) * 2.5;
         let x = 0;
         for(let i = 0; i < bufferLength; i++) {
@@ -98,27 +115,23 @@ function initVisualizer() {
     draw();
 }
 
-// Mic Handlers
+// ... Mic Recording functions remain same ...
 async function startRecording() {
     if (!navigator.mediaDevices) return UI.showToast("Mic denied", "error");
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         window._mediaRecorder = new MediaRecorder(stream);
         let audioChunks = [];
-        
         window._mediaRecorder.ondataavailable = e => audioChunks.push(e.data);
         window._mediaRecorder.onstop = () => {
             window.recordedBlob = new Blob(audioChunks, { type: 'audio/webm' });
             if(window.Controllers && window.Controllers.handleRecordingComplete) 
                 window.Controllers.handleRecordingComplete();
         };
-        
         window._mediaRecorder.start();
         if(UI && UI.showRecordingState) UI.showRecordingState(true);
-        
     } catch(e) { UI.showToast("Mic Error: " + e.message, "error"); }
 }
-
 function stopRecording() {
     if (window._mediaRecorder && window._mediaRecorder.state !== 'inactive') {
         window._mediaRecorder.stop();
@@ -126,5 +139,4 @@ function stopRecording() {
         if(UI && UI.showRecordingState) UI.showRecordingState(false);
     }
 }
-
 function clearRecordingData() { window.recordedBlob = null; window._mediaRecorder = null; }

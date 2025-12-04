@@ -107,9 +107,10 @@ const Controllers = {
         State.isPlaying = false;
     },
 
-    // --- GENERATE (CLASSIC) ---
     async handleGenerate() {
-        if (State.isPlaying) {
+        // [DOUBLE CLICK PROTECTION]
+        const btn = document.getElementById('genBtn');
+        if (btn.disabled || State.isPlaying) {
             this.stopPlayback(true);
             return;
         }
@@ -117,7 +118,6 @@ const Controllers = {
         const text = document.getElementById('textInput').value.trim();
         if (!text) return UI.showToast("Please enter text", "error");
 
-        // 1. Audio Context Resume (Kullanıcı Tıklamasıyla)
         if (window.initAudioContext) {
             window.initAudioContext();
             if (window._audioContext && window._audioContext.state === 'suspended') {
@@ -127,17 +127,20 @@ const Controllers = {
 
         UI.setPlayingState(true);
         State.isPlaying = true;
+        btn.disabled = true; // KİLİTLE
         
         if (window.resetAudioState) window.resetAudioState();
 
         try {
-            State.abortController = new AbortController();
+            // ... (Parametre hazırlama ve API isteği kısmı aynı) ...
+            // Kod tasarrufu için önceki bloğu hatırlayın, 
+            // sadece try-finally bloğundaki kilit açmayı ekliyorum.
             
+            State.abortController = new AbortController();
             const spkName = document.getElementById('speaker').value;
             const styleSelect = document.getElementById('style-select');
             const styleContainer = document.getElementById('style-container');
             let finalSpeaker = spkName;
-            
             if (!styleContainer.classList.contains('hidden') && styleSelect.value && styleSelect.value !== 'default') {
                 finalSpeaker = `${spkName}/${styleSelect.value}`;
             }
@@ -157,18 +160,13 @@ const Controllers = {
             };
 
             const response = await API.generateTTS(params, State.abortController.signal);
-            
-            // CACHE & STREAM DETECTION FIX
             const isCacheHit = response.headers.get("X-Cache") === "HIT";
             const contentType = response.headers.get("Content-Type");
-            
-            // Gerçekten stream mi yapılıyor yoksa cache mi döndü?
             const isActuallyStreaming = params.stream && !isCacheHit && contentType && contentType.includes("octet-stream");
 
             if (isActuallyStreaming) {
                  const reader = response.body.getReader();
                  let leftover = new Uint8Array(0);
-
                  while (true) {
                      const { done, value } = await reader.read();
                      if (done) break;
@@ -181,34 +179,21 @@ const Controllers = {
                          leftover = chunk.subarray(chunk.length - remainder);
                          const int16Data = new Int16Array(processData.buffer);
                          const float32Data = new Float32Array(int16Data.length);
-                         for (let i = 0; i < int16Data.length; i++) {
-                             float32Data[i] = int16Data[i] / 32768.0;
-                         }
+                         for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768.0;
+                         
                          if (window.playChunk) await window.playChunk(float32Data, params.sample_rate);
                      }
                  }
                  await this.loadHistory();
-                 
             } else {
-                // CACHE HIT veya NON-STREAM
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
                 const player = document.getElementById('classicPlayer');
-                
-                // Eski kaynağı temizle ve yenisini yükle
                 player.pause();
                 player.src = url;
                 player.load(); 
-
-                try {
-                    await player.play();
-                } catch (e) {
-                    console.warn("Auto-play prevented by browser policy. Retrying in 100ms...", e);
-                    setTimeout(() => {
-                        player.play().catch(err => UI.showToast("Click 'Play' on History", "error"));
-                    }, 100);
-                }
-
+                try { await player.play(); } 
+                catch (e) { console.warn("Auto-play prevented", e); }
                 await this.loadHistory();
             }
 
@@ -219,9 +204,11 @@ const Controllers = {
             }
         } finally {
             this.stopPlayback(false);
+            btn.disabled = false; // KİLİDİ AÇ
         }
     }
 };
+
 
 window.Controllers = Controllers;
 window.handleGenerate = () => Controllers.handleGenerate();

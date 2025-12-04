@@ -133,29 +133,19 @@ class TTSEngine:
         }
 
     def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
-        """
-        GHOST ARTIFACT KILLER v3 (Aggressive Edition):
-        Threshold 0.015 -> 0.025 yükseltildi.
-        Fade Length 1200 -> 2400 (~100ms) yapıldı.
-        """
         if wav_tensor.numel() == 0: return wav_tensor
         if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
 
         wav_np = wav_tensor.numpy()
         abs_wav = np.abs(wav_np)
         
-        # 1. Reverse Scan: Sondan başa doğru threshold'u geçen İLK güçlü sinyali bul
         mask = abs_wav > threshold
         if not np.any(mask): return wav_tensor 
             
         last_index = len(mask) - 1 - np.argmax(mask[::-1])
-        
-        # 2. Kesim: Son güçlü sinyalden sonraki fade_len kadar alanı tut, gerisini at.
-        # Bu, eğer sonda "pıt" varsa ve threshold'un altındaysa, onu tamamen kesecektir.
         cut_index = min(last_index + fade_len, len(wav_np))
         trimmed_wav = wav_np[:cut_index]
         
-        # 3. Fade Out
         if len(trimmed_wav) > fade_len:
             fade_curve = np.linspace(1.0, 0.0, fade_len)
             trimmed_wav[-fade_len:] *= fade_curve
@@ -163,14 +153,10 @@ class TTSEngine:
         return torch.from_numpy(trimmed_wav)
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
-        # Cache mantığı artık Hash tabanlı API tarafında yönetilecek, 
-        # ancak Engine içi cache (Hızlı erişim) kalabilir.
         conf = self._prepare_inference(params, speaker_wavs)
 
         with self._gpu_lock:
             try:
-                # logger.info(f"🐢 GPU Inference: Len={len(conf['text'])}") 
-                # (Log kirliliğini azaltmak için kapattım, sadece API loglasın)
                 with torch.inference_mode():
                     if ssml_handler.is_ssml(conf['text']):
                         segments = ssml_handler.parse(conf['text'], params)
@@ -214,6 +200,9 @@ class TTSEngine:
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
+        """
+        Stream modunda Look-Ahead buffer kullanarak SON pakete Fade-Out uygular.
+        """
         conf = self._prepare_inference(params, speaker_wavs)
         
         with self._gpu_lock:
@@ -226,14 +215,36 @@ class TTSEngine:
                         enable_text_splitting=True
                     )
 
+                    last_chunk_np = None # Son paketi tutmak için buffer
+
                     for chunk in chunks:
+                        # 1. Ham veriyi al ve Numpy'a çevir
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
-                        # Stream Noise Gate (Sert Kesim)
-                        max_val = np.max(np.abs(wav_chunk_float))
-                        if max_val < 0.005: continue
                         
-                        np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
-                        yield (wav_chunk_float * 32767).astype(np.int16).tobytes()
+                        # 2. Noise Gate (Gürültü çok düşükse hiç işleme alma)
+                        if np.max(np.abs(wav_chunk_float)) < 0.005: continue
+
+                        # 3. Buffer Logic (Look-Ahead)
+                        # Eğer elimizde bir önceki turdan kalan paket varsa, onu güvenle gönder (çünkü son değilmiş)
+                        if last_chunk_np is not None:
+                            np.clip(last_chunk_np, -1.0, 1.0, out=last_chunk_np)
+                            yield (last_chunk_np * 32767).astype(np.int16).tobytes()
+                        
+                        # Şu anki paketi "son olabilir" diye sakla
+                        last_chunk_np = wav_chunk_float
+                    
+                    # 4. Döngü bitti, demek ki elimizdeki last_chunk_np GERÇEKTEN son paket.
+                    # Buna Fade-Out / Trim uygula!
+                    if last_chunk_np is not None:
+                        logger.info("🔪 Cleaning last stream chunk (Fade-Out)...")
+                        
+                        # Tensöre çevir -> Temizle -> Numpy'a dön
+                        last_tensor = torch.from_numpy(last_chunk_np)
+                        cleaned_tensor = self._clean_and_trim_tensor(last_tensor, threshold=0.025, fade_len=2400)
+                        cleaned_np = cleaned_tensor.numpy()
+                        
+                        np.clip(cleaned_np, -1.0, 1.0, out=cleaned_np)
+                        yield (cleaned_np * 32767).astype(np.int16).tobytes()
                     
                     self.memory_manager.check_and_clear()
 
@@ -343,11 +354,23 @@ class TTSEngine:
         if settings.DEVICE == "cuda" and torch.cuda.is_available():
             g, s = g.cuda(), s.cuda()
         return g, s
+        
+    def _generate_cache_key(self, params):
+        if params.get("speaker_wavs"): return None
+        key_data = {k:v for k,v in params.items() if k in ["text", "lang", "speaker_idx", "temperature", "speed", "output_format", "sample_rate"]}
+        return hashlib.md5(json.dumps(key_data, sort_keys=True).encode()).hexdigest()
 
-    # Eski cache metodlarını hash tabanlı yapıya uyum için kaldırıyoruz veya boş bırakıyoruz
-    # Artık API katmanı hash hesaplayacak.
-    def _generate_cache_key(self, params): return None 
-    def _check_cache(self, key): return None
-    def _save_cache(self, key, data): pass
+    def _check_cache(self, key):
+        if not key: return None
+        path = os.path.join(self.CACHE_DIR, f"{key}.bin")
+        if os.path.exists(path):
+            try: return open(path, "rb").read()
+            except: return None
+        return None
+
+    def _save_cache(self, key, data):
+        if not key: return
+        try: open(os.path.join(self.CACHE_DIR, f"{key}.bin"), "wb").write(data)
+        except: pass
 
 tts_engine = TTSEngine()
