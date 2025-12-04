@@ -40,7 +40,7 @@ services:
       - .env
     volumes: 
       - "${CERTIFICATES_REPO_PATH}:/sentiric-certificates:ro"
-      - "${ASSETS_REPO_PATH}/docs/audio/speakers/en:/app/speakers"
+      - "${ASSETS_REPO_PATH}/docs/audio/speakers:/app/speakers"
       - tts-coqui-models:/root/.local/share/tts
       - tts-coqui-history:/app/history
       - tts-coqui-cache:/app/cache
