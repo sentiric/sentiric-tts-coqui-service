@@ -11,7 +11,7 @@ import threading
 import gc
 import shutil
 import torchaudio
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Dict, Any
 
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
@@ -38,8 +38,7 @@ class SmartMemoryManager:
         self.gc_frequency = 10 
 
     def check_and_clear(self):
-        if self.device != "cuda":
-            return
+        if self.device != "cuda": return
 
         self.request_counter += 1
         
@@ -52,8 +51,7 @@ class SmartMemoryManager:
             reserved = torch.cuda.memory_reserved() / (1024 * 1024)
             if reserved > self.threshold_mb:
                 self._force_clean(f"High VRAM Usage ({int(reserved)}MB)")
-        except Exception:
-            pass
+        except Exception: pass
 
     def _force_clean(self, reason: str):
         logger.debug(f"🧹 Memory Cleanup Triggered: {reason}")
@@ -114,104 +112,131 @@ class TTSEngine:
                     logger.warning("⚠️ Model CPU üzerinde çalışıyor (Yavaş).")
                 
                 self.refresh_speakers(force=True)
-                
             except Exception as e:
                 logger.critical(f"🔥 Model init failed: {e}")
                 raise e
 
-    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.015) -> torch.Tensor:
+    def _prepare_inference(self, params: dict, speaker_wavs=None) -> Dict[str, Any]:
         """
-        GHOST ARTIFACT KILLER:
-        Sesin sonundaki sessizliği ve düşük enerjili gürültüleri (nefes, pıt sesi) keser.
-        Stream ve Non-Stream modları için ortak temizleyici.
+        DRY PRENSİBİ: Ortak hazırlık işlemleri burada yapılır.
         """
-        if wav_tensor.numel() == 0:
-            return wav_tensor
+        # 1. Parametreleri Çıkar
+        p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
+        text = normalizer.normalize(params.get("text", ""), p_lang)
+        
+        # Dil Otomatik Algılama
+        if not p_lang or p_lang == "auto":
+            try:
+                p_lang = langid.classify(text)[0].strip()
+            except:
+                p_lang = settings.DEFAULT_LANGUAGE
+        if p_lang == "zh": p_lang = "zh-cn"
 
-        # GPU'dan CPU'ya al (Eğer değilse)
-        if wav_tensor.device.type == "cuda":
-            wav_tensor = wav_tensor.cpu()
+        # 2. Speaker Latents (Cache veya Hesaplama)
+        p_speaker_id = params.get("speaker_idx", settings.DEFAULT_SPEAKER)
+        
+        # GPU'da bellek yönetimi öncesi hazırlık
+        gpt_cond_latent, speaker_embedding = self._get_latents(p_speaker_id, speaker_wavs)
+
+        # 3. Konfigürasyon Sözlüğü Hazırla
+        inference_config = {
+            "text": text,
+            "language": p_lang,
+            "gpt_cond_latent": gpt_cond_latent,
+            "speaker_embedding": speaker_embedding,
+            "temperature": params.get("temperature", settings.DEFAULT_TEMPERATURE),
+            "speed": params.get("speed", settings.DEFAULT_SPEED),
+            "top_k": params.get("top_k", settings.DEFAULT_TOP_K),
+            "top_p": params.get("top_p", settings.DEFAULT_TOP_P),
+            "repetition_penalty": params.get("repetition_penalty", settings.DEFAULT_REPETITION_PENALTY),
+        }
+        
+        return inference_config
+
+    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.015, fade_len: int = 1200) -> torch.Tensor:
+        """
+        GHOST ARTIFACT KILLER v2 (Fade-Out Edition):
+        Sesi kesmek yerine, sonundaki gürültüyü tespit edip yumuşakça sönümlendirir (Fade-Out).
+        fade_len: 1200 sample ~ 50ms (24kHz'de)
+        """
+        if wav_tensor.numel() == 0: return wav_tensor
+        if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
 
         wav_np = wav_tensor.numpy()
-        
-        # 1. Mutlak değer al
         abs_wav = np.abs(wav_np)
         
-        # 2. Threshold üzerindeki son indeksi bul (Sondan başa tarama)
-        # 0.015 değeri fısıltıdan biraz daha yüksek bir gürültü eşiğidir.
+        # 1. Threshold üzerindeki son indeksi bul
         mask = abs_wav > threshold
-        if not np.any(mask):
-            return wav_tensor # Tamamen sessizse dokunma
+        if not np.any(mask): return wav_tensor # Tamamen sessiz
             
         last_index = len(mask) - 1 - np.argmax(mask[::-1])
         
-        # 3. Biraz "Fade Out" payı bırak (Sesin çok sert kesilmemesi için +1000 sample ~40ms)
-        cut_index = min(last_index + 1000, len(wav_np))
+        # 2. Kesim noktası belirle (Son sesten biraz ileri)
+        cut_index = min(last_index + fade_len, len(wav_np))
+        trimmed_wav = wav_np[:cut_index]
         
-        return torch.from_numpy(wav_np[:cut_index])
+        # 3. FADE OUT UYGULA (Keskin bitişi engeller, pıt sesini yok eder)
+        if len(trimmed_wav) > fade_len:
+            # 1.0'dan 0.0'a inen bir dizi oluştur
+            fade_curve = np.linspace(1.0, 0.0, fade_len)
+            # Son n sample'ı bu eğriyle çarp
+            trimmed_wav[-fade_len:] *= fade_curve
+
+        return torch.from_numpy(trimmed_wav)
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
-        p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
-        p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
-        p_speed = params.get("speed", settings.DEFAULT_SPEED)
-        p_top_k = params.get("top_k", settings.DEFAULT_TOP_K)
-        p_top_p = params.get("top_p", settings.DEFAULT_TOP_P)
-        p_rep_pen = params.get("repetition_penalty", settings.DEFAULT_REPETITION_PENALTY)
-        p_speaker_id = params.get("speaker_idx", settings.DEFAULT_SPEAKER)
-        
-        text = normalizer.normalize(params.get("text", ""), p_lang)
-        if not text: return b""
-        
-        is_ssml = ssml_handler.is_ssml(text)
-        cache_key = None
-        if not is_ssml and not speaker_wavs:
-            cache_data = {**params, "text": text, "spk": p_speaker_id, "lang": p_lang}
-            cache_key = self._generate_cache_key(cache_data)
+        # Cache Kontrolü (SSML değilse)
+        text = params.get("text", "")
+        if not ssml_handler.is_ssml(text) and not speaker_wavs:
+            # Basit parametrelerle cache key oluştur
+            cache_key = self._generate_cache_key({**params, "text": text})
             cached = self._check_cache(cache_key)
             if cached: return cached
 
         raw_wav_tensor = None
+        
+        # Ortak hazırlık fonksiyonunu çağır (DRY)
+        # SSML durumunda text ham haliyle alınır, parse içeride yapılır
+        conf = self._prepare_inference(params, speaker_wavs)
 
         with self._gpu_lock:
             try:
-                logger.info(f"🐢 GPU Inference: Len={len(text)} Spk={p_speaker_id}")
+                logger.info(f"🐢 GPU Inference: Len={len(conf['text'])}")
                 with torch.inference_mode():
-                    gpt_cond_latent, speaker_embedding = self._get_latents(p_speaker_id, speaker_wavs)
                     
-                    if is_ssml:
-                        segments = ssml_handler.parse(text, params)
+                    if ssml_handler.is_ssml(conf['text']):
+                        # SSML Logic (Parçalı Sentez)
+                        segments = ssml_handler.parse(conf['text'], params)
                         wav_chunks = []
                         for segment in segments:
                             if segment['type'] == 'text':
-                                seg_speed = segment['params'].get("speed", p_speed)
+                                seg_speed = segment['params'].get("speed", conf['speed'])
                                 out = self.model.inference(
-                                    segment['content'], p_lang, gpt_cond_latent, speaker_embedding,
-                                    temperature=p_temp, repetition_penalty=p_rep_pen,
-                                    top_k=p_top_k, top_p=p_top_p, speed=seg_speed
+                                    segment['content'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
+                                    temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
+                                    top_k=conf['top_k'], top_p=conf['top_p'], speed=seg_speed
                                 )
                                 wav_chunks.append(torch.tensor(out['wav']))
                             elif segment['type'] == 'break':
                                 wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
                         raw_wav_tensor = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
                     else:
+                        # Standard Logic
                         out = self.model.inference(
-                            text, p_lang, gpt_cond_latent, speaker_embedding,
-                            temperature=p_temp, repetition_penalty=p_rep_pen,
-                            top_k=p_top_k, top_p=p_top_p, speed=p_speed
+                            conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
+                            temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
+                            top_k=conf['top_k'], top_p=conf['top_p'], speed=conf['speed']
                         )
                         raw_wav_tensor = torch.tensor(out["wav"])
 
-                    if settings.DEVICE == "cuda": 
-                        raw_wav_tensor = raw_wav_tensor.cpu()
-                    
+                    if settings.DEVICE == "cuda": raw_wav_tensor = raw_wav_tensor.cpu()
                     self.memory_manager.check_and_clear()
 
             except Exception as e:
                 logger.error(f"Synthesize Error: {e}")
                 return b""
 
-        # --- UNIFIED CLEANUP ---
-        # Ham tensörü temizle (Sonundaki hayalet sesleri kes)
+        # Cleanup & Fade Out
         cleaned_tensor = self._clean_and_trim_tensor(raw_wav_tensor)
         
         wav_data = audio_processor.tensor_to_bytes(cleaned_tensor)
@@ -219,49 +244,36 @@ class TTSEngine:
             wav_data, 
             params.get("output_format", settings.DEFAULT_OUTPUT_FORMAT), 
             params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE),
-            add_silence=False # Artık manuel temizlik yaptığımız için otomatize sessizlik eklemeyi kapattık
+            add_silence=False # Fade out yaptık, silence ekleme
         )
         
-        if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
+        # Cache'e yaz
+        if not ssml_handler.is_ssml(text) and not speaker_wavs:
+            cache_key = self._generate_cache_key({**params, "text": text})
+            self._save_cache(cache_key, final_audio)
         
         return final_audio
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
-        """
-        Stream modunda 'Noise Gate' uygulanır.
-        """
-        p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
-        p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
-        p_speed = params.get("speed", settings.DEFAULT_SPEED)
-        p_top_k = params.get("top_k", settings.DEFAULT_TOP_K)
-        p_top_p = params.get("top_p", settings.DEFAULT_TOP_P)
-        p_rep_pen = params.get("repetition_penalty", settings.DEFAULT_REPETITION_PENALTY)
-        p_speaker_id = params.get("speaker_idx", settings.DEFAULT_SPEAKER)
-
-        text = normalizer.normalize(params.get("text", ""), p_lang)
-        if not p_lang or p_lang == "auto": 
-            p_lang = langid.classify(text)[0].strip()
-        if p_lang == "zh": p_lang = "zh-cn"
+        # Ortak hazırlık (DRY)
+        conf = self._prepare_inference(params, speaker_wavs)
         
         with self._gpu_lock:
             try:
                 with torch.inference_mode():
-                    gpt_cond_latent, speaker_embedding = self._get_latents(p_speaker_id, speaker_wavs)
-                    
                     chunks = self.model.inference_stream(
-                        text, p_lang, gpt_cond_latent, speaker_embedding,
-                        temperature=p_temp, repetition_penalty=p_rep_pen,
-                        top_k=p_top_k, top_p=p_top_p, speed=p_speed,
+                        conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
+                        temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
+                        top_k=conf['top_k'], top_p=conf['top_p'], speed=conf['speed'],
                         enable_text_splitting=True
                     )
 
                     for chunk in chunks:
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
                         
-                        # --- NOISE GATE ---
+                        # Noise Gate (Stream için basit filtre)
                         max_val = np.max(np.abs(wav_chunk_float))
-                        if max_val < 0.005:
-                            continue
+                        if max_val < 0.005: continue
                         
                         np.clip(wav_chunk_float, -1.0, 1.0, out=wav_chunk_float)
                         yield (wav_chunk_float * 32767).astype(np.int16).tobytes()
@@ -272,11 +284,11 @@ class TTSEngine:
                 logger.error(f"Stream error: {e}")
                 yield b""
 
+    # --- HELPER METHODS ---
     def refresh_speakers(self, force=False):
         now = time.time()
         if not force and (now - self.last_cache_update < self.CACHE_TTL):
             return {"status": "cached", "count": len(self.speakers_map)}
-
         new_map = {}
         try:
             entries = os.listdir(self.SPEAKERS_DIR)
@@ -287,14 +299,11 @@ class TTSEngine:
                     for f in glob.glob(os.path.join(path, "*.wav")):
                         style_name = os.path.splitext(os.path.basename(f))[0]
                         styles.append(style_name)
-                    if styles:
-                        new_map[entry] = sorted(styles)
+                    if styles: new_map[entry] = sorted(styles)
                 elif entry.endswith(".wav"):
                     speaker_name = os.path.splitext(entry)[0]
                     new_map[speaker_name] = ["default"]
-        except Exception as e:
-            logger.error(f"Speaker scan error: {e}")
-
+        except Exception: pass
         self.speakers_map = new_map
         self.last_cache_update = now
         logger.info(f"🔊 Speakers refreshed. Total: {len(new_map)}")
@@ -306,8 +315,7 @@ class TTSEngine:
         return self.speakers_map
 
     def _ensure_fallback_speaker(self):
-        if not os.path.exists(self.SPEAKERS_DIR):
-            os.makedirs(self.SPEAKERS_DIR)
+        if not os.path.exists(self.SPEAKERS_DIR): os.makedirs(self.SPEAKERS_DIR)
         has_files = False
         for root, dirs, files in os.walk(self.SPEAKERS_DIR):
             if any(f.endswith('.wav') for f in files):
@@ -316,12 +324,12 @@ class TTSEngine:
         if not has_files:
             fallback_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
             try:
-                sample_rate = 24000
-                duration_sec = 2.0
-                t = torch.linspace(0, duration_sec, int(sample_rate * duration_sec))
+                # Sine wave generation
+                sr = 24000; d = 2.0
+                t = torch.linspace(0, d, int(sr * d))
                 waveform = torch.sin(2 * torch.pi * 220 * t).unsqueeze(0)
-                torchaudio.save(fallback_path, waveform, sample_rate)
-            except Exception: pass
+                torchaudio.save(fallback_path, waveform, sr)
+            except: pass
 
     def _migrate_legacy_speakers(self):
         wav_files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
@@ -340,14 +348,10 @@ class TTSEngine:
         if speaker_wavs: 
             latents = self.model.get_conditioning_latents(audio_path=speaker_wavs, gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
             return self._to_cuda(latents)
-        
         if not speaker_id: speaker_id = settings.DEFAULT_SPEAKER
+        if "/" in speaker_id: spk_name, spk_style = speaker_id.split("/", 1)
+        else: spk_name, spk_style = speaker_id, "default"
         
-        if "/" in speaker_id:
-            spk_name, spk_style = speaker_id.split("/", 1)
-        else:
-            spk_name, spk_style = speaker_id, "default"
-
         wav_path = None
         folder_path = os.path.join(self.SPEAKERS_DIR, spk_name)
         if os.path.isdir(folder_path):
@@ -356,24 +360,19 @@ class TTSEngine:
             else:
                 files = glob.glob(os.path.join(folder_path, "*.wav"))
                 if files: wav_path = files[0]
-        
         if not wav_path:
             root_path = os.path.join(self.SPEAKERS_DIR, f"{spk_name}.wav")
             if os.path.exists(root_path): wav_path = root_path
-
         if not wav_path or not os.path.exists(wav_path):
             self._ensure_fallback_speaker()
             wav_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
 
         cache_id = hashlib.md5(wav_path.encode()).hexdigest()
         latent_file = os.path.join(self.LATENTS_DIR, f"{cache_id}.json")
-        
         if os.path.exists(latent_file):
             try:
                 with open(latent_file, 'r') as f: data = json.load(f)
-                gpt_cond_latent = torch.tensor(data["gpt_cond_latent"])
-                speaker_embedding = torch.tensor(data["speaker_embedding"])
-                return self._to_cuda((gpt_cond_latent, speaker_embedding))
+                return self._to_cuda((torch.tensor(data["gpt_cond_latent"]), torch.tensor(data["speaker_embedding"])))
             except: pass
 
         latents = self.model.get_conditioning_latents(audio_path=[wav_path], gpt_cond_len=30, gpt_cond_chunk_len=4, max_ref_length=60)
@@ -381,15 +380,13 @@ class TTSEngine:
             with open(latent_file, 'w') as f: 
                 json.dump({"gpt_cond_latent": latents[0].cpu().tolist(), "speaker_embedding": latents[1].cpu().tolist()}, f)
         except: pass
-        
         return self._to_cuda(latents)
 
     def _to_cuda(self, latents):
-        gpt_cond_latent, speaker_embedding = latents
+        g, s = latents
         if settings.DEVICE == "cuda" and torch.cuda.is_available():
-            gpt_cond_latent = gpt_cond_latent.cuda()
-            speaker_embedding = speaker_embedding.cuda()
-        return gpt_cond_latent, speaker_embedding
+            g, s = g.cuda(), s.cuda()
+        return g, s
         
     def _generate_cache_key(self, params):
         if params.get("speaker_wavs"): return None
@@ -400,7 +397,7 @@ class TTSEngine:
         if not key: return None
         path = os.path.join(self.CACHE_DIR, f"{key}.bin")
         if os.path.exists(path):
-            try:
+            try: 
                 with open(path, "rb") as f: 
                     return f.read()
             except: 
