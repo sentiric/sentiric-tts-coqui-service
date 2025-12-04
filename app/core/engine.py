@@ -119,6 +119,37 @@ class TTSEngine:
                 logger.critical(f"🔥 Model init failed: {e}")
                 raise e
 
+    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.015) -> torch.Tensor:
+        """
+        GHOST ARTIFACT KILLER:
+        Sesin sonundaki sessizliği ve düşük enerjili gürültüleri (nefes, pıt sesi) keser.
+        Stream ve Non-Stream modları için ortak temizleyici.
+        """
+        if wav_tensor.numel() == 0:
+            return wav_tensor
+
+        # GPU'dan CPU'ya al (Eğer değilse)
+        if wav_tensor.device.type == "cuda":
+            wav_tensor = wav_tensor.cpu()
+
+        wav_np = wav_tensor.numpy()
+        
+        # 1. Mutlak değer al
+        abs_wav = np.abs(wav_np)
+        
+        # 2. Threshold üzerindeki son indeksi bul (Sondan başa tarama)
+        # 0.015 değeri fısıltıdan biraz daha yüksek bir gürültü eşiğidir.
+        mask = abs_wav > threshold
+        if not np.any(mask):
+            return wav_tensor # Tamamen sessizse dokunma
+            
+        last_index = len(mask) - 1 - np.argmax(mask[::-1])
+        
+        # 3. Biraz "Fade Out" payı bırak (Sesin çok sert kesilmemesi için +1000 sample ~40ms)
+        cut_index = min(last_index + 1000, len(wav_np))
+        
+        return torch.from_numpy(wav_np[:cut_index])
+
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
         p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
@@ -179,12 +210,16 @@ class TTSEngine:
                 logger.error(f"Synthesize Error: {e}")
                 return b""
 
-        wav_data = audio_processor.tensor_to_bytes(raw_wav_tensor)
+        # --- UNIFIED CLEANUP ---
+        # Ham tensörü temizle (Sonundaki hayalet sesleri kes)
+        cleaned_tensor = self._clean_and_trim_tensor(raw_wav_tensor)
+        
+        wav_data = audio_processor.tensor_to_bytes(cleaned_tensor)
         final_audio = audio_processor.process_audio(
             wav_data, 
             params.get("output_format", settings.DEFAULT_OUTPUT_FORMAT), 
             params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE),
-            add_silence=True 
+            add_silence=False # Artık manuel temizlik yaptığımız için otomatize sessizlik eklemeyi kapattık
         )
         
         if not is_ssml and cache_key: self._save_cache(cache_key, final_audio)
@@ -194,7 +229,6 @@ class TTSEngine:
     def synthesize_stream(self, params: dict, speaker_wavs=None):
         """
         Stream modunda 'Noise Gate' uygulanır.
-        Çok düşük genlikli (sessiz) paketler gönderilmez.
         """
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
         p_temp = params.get("temperature", settings.DEFAULT_TEMPERATURE)
