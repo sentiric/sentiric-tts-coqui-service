@@ -283,20 +283,24 @@ class TTSEngine:
         return self.speakers_map
 
     def _ensure_fallback_speaker(self):
-        if not os.path.exists(self.SPEAKERS_DIR): os.makedirs(self.SPEAKERS_DIR)
-        has_files = False
-        for root, dirs, files in os.walk(self.SPEAKERS_DIR):
-            if any(f.endswith('.wav') for f in files):
-                has_files = True
-                break
-        if not has_files:
-            fallback_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
-            try:
-                sr = 24000; d = 2.0
-                t = torch.linspace(0, d, int(sr * d))
-                waveform = torch.sin(2 * torch.pi * 220 * t).unsqueeze(0)
-                torchaudio.save(fallback_path, waveform, sr)
-            except: pass
+            if not os.path.exists(self.SPEAKERS_DIR):
+                os.makedirs(self.SPEAKERS_DIR, exist_ok=True) # exist_ok=True önemli
+            
+            default_path = os.path.join(self.SPEAKERS_DIR, "system_default.wav")
+            
+            # Dosya yoksa veya boyutu 0 ise oluştur
+            if not os.path.exists(default_path) or os.path.getsize(default_path) < 100:
+                logger.info("⚠️ System default speaker missing. Generating fallback tone...")
+                try:
+                    # 24kHz, 1 saniyelik sessizlik/bip
+                    sr = 24000
+                    # Basit bir tensör oluşturup kaydet
+                    silent_waveform = torch.zeros(1, sr) # 1 saniyelik sessizlik
+                    torchaudio.save(default_path, silent_waveform, sr)
+                    logger.info(f"✅ Fallback speaker created at {default_path}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to create fallback speaker: {e}")
+                    
 
     def _migrate_legacy_speakers(self):
         wav_files = glob.glob(os.path.join(self.SPEAKERS_DIR, "*.wav"))
