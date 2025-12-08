@@ -1,3 +1,14 @@
+# 
+
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric.cloud}"
+    driver: bridge
+    external: true  
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-10.88.0.0/16}
+          gateway: ${NETWORK_GATEWAY:-10.88.0.1}
 
 services:
   tts-service:
@@ -8,7 +19,9 @@ services:
     restart: unless-stopped
     ports:
       - "14030:14030"  # HTTP
-      - "14031:14031" # gRPC
+      - "14031:14031" # gRPC      
+    networks:
+      - sentiric-net
     environment:
       - ENV=production
       - TTS_COQUI_SERVICE_DEVICE=cuda
@@ -26,3 +39,4 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
+           

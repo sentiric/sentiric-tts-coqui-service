@@ -40,3 +40,4 @@ cache
 tests/output
 tests/*.wav
 *.wav
+models

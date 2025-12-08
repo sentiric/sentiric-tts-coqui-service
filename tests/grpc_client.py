@@ -4,16 +4,15 @@ import logging
 import time
 
 # Sentiric Contracts (Otomatik üretilen kodlar)
-from sentiric.tts.v1 import tts_pb2
-from sentiric.tts.v1 import tts_pb2_grpc
+# DÜZELTME: Importlar
+from sentiric.tts.v1 import coqui_pb2
+from sentiric.tts.v1 import coqui_pb2_grpc
 
 # Loglama Ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s | %(levelname)s | %(message)s')
 logger = logging.getLogger("TEST-CLIENT")
 
 def run_test():
-    # 1. Konfigürasyonu Ortam Değişkenlerinden Al (NO HARDCODING)
-    # Varsayılanlar localhost ve 14031'dir ama override edilebilir.
     TARGET_HOST = os.getenv("TTS_SERVICE_HOST", "localhost")
     TARGET_PORT = os.getenv("TTS_SERVICE_PORT", "14031")
     TARGET_ADDRESS = f"{TARGET_HOST}:{TARGET_PORT}"
@@ -22,28 +21,28 @@ def run_test():
 
     logger.info(f"🔌 Connecting to gRPC Service at: {TARGET_ADDRESS}")
 
-    # 2. Kanal Oluştur (Insecure - Development için)
-    # Gelecekte mTLS için buraya sertifika yükleme eklenecek.
     try:
         with grpc.insecure_channel(TARGET_ADDRESS) as channel:
-            stub = tts_pb2_grpc.TextToSpeechServiceStub(channel)
+            # DÜZELTME: Stub sınıfı
+            stub = coqui_pb2_grpc.TtsCoquiServiceStub(channel)
             
-            # 3. İsteği Hazırla (Contracts'a uygun)
-            request = tts_pb2.SynthesizeRequest(
-                text="Hello sentrik team. This is a gRPC integration test running on production configuration.",
-                language_code="en",
-                voice_selector="Ana Florence" # Modelin desteklediği bir ses
+            # DÜZELTME: Request sınıfı ve alanlar
+            request = coqui_pb2.CoquiSynthesizeRequest(
+                text="Merhaba Sentiric ekibi. Bu bir Coqui motoru testidir.",
+                language_code="tr",
+                # Opsiyonel parametreler
+                speed=1.0,
+                temperature=0.75
             )
 
-            logger.info("📤 Sending Synthesize Request...")
+            logger.info("📤 Sending CoquiSynthesize Request...")
             start_time = time.time()
 
-            # 4. RPC Çağrısı
-            response = stub.Synthesize(request)
+            # DÜZELTME: Metod çağrısı
+            response = stub.CoquiSynthesize(request)
             
             duration = time.time() - start_time
             logger.info(f"📥 Response Received in {duration:.3f}s")
-            logger.info(f"🤖 Engine Used: {response.engine_used}")
 
             # 5. Çıktıyı Kaydet
             os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)

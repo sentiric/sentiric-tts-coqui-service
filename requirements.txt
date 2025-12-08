@@ -19,7 +19,8 @@ pydantic-settings>=2.0.0
 # --- gRPC & Contracts ---
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.11.3
+# DÜZELTME: v1.12.0
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.12.0
 
 # --- Monitoring & Logging ---
 prometheus-fastapi-instrumentator>=6.1.0

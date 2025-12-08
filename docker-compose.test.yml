@@ -1,3 +1,14 @@
+# 
+
+networks:
+  sentiric-net:
+    name: "${NETWORK_NAME:-sentiric.cloud}"
+    driver: bridge
+    external: true  
+    ipam:
+      config:
+        - subnet: ${NETWORK_SUBNET:-10.88.0.0/16}
+          gateway: ${NETWORK_GATEWAY:-10.88.0.1}
 
 services:
   # Bu servis sadece testi çalıştırıp kapanır
@@ -20,9 +31,3 @@ services:
     # depends_on:
     #   tts-coqui-service:
     #     condition: service_started
-
-# Mevcut ağa bağlanması için (Ana docker-compose.yml ile aynı ağ adı olmalı)
-networks:
-  sentiric-net:
-    external: true
-    name: "sentiric.cloud"
