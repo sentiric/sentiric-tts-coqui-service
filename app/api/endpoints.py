@@ -152,7 +152,8 @@ async def get_public_config():
             "temperature": settings.DEFAULT_TEMPERATURE, "speed": settings.DEFAULT_SPEED,
             "top_k": settings.DEFAULT_TOP_K, "top_p": settings.DEFAULT_TOP_P,
             "repetition_penalty": settings.DEFAULT_REPETITION_PENALTY,
-            "language": settings.DEFAULT_LANGUAGE, "speaker": settings.DEFAULT_SPEAKER
+            "language": settings.DEFAULT_LANGUAGE, "speaker": settings.DEFAULT_SPEAKER,
+            "sample_rate": settings.DEFAULT_SAMPLE_RATE
         },
         "limits": {
             "max_text_len": 5000, "supported_formats": ["wav", "mp3", "opus", "pcm"],
@@ -201,7 +202,6 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         raise HTTPException(status_code=422, detail="Input text cannot be empty.")
     
     # 1. Dil Tespiti (Language Detection)
-    # Open WebUI dil göndermezse metinden anla
     detected_lang = settings.DEFAULT_LANGUAGE
     try:
         lang_code, confidence = langid.classify(request.input)
@@ -212,21 +212,13 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
 
     # 2. Speaker Mapping (OpenAI -> Sentiric)
     openai_map = {
-        "alloy": "F_TR_Kurumsal_Ece",
-        "echo": "M_TR_Heyecanli_Can",
-        "fable": "M_TR_Enerjik_Mert",
-        "onyx": "M_TR_Tok_Kadir",
-        "nova": "F_TR_Parlak_Zeynep",
-        "shimmer": "F_TR_Genc_Selin"
+        "alloy": "F_TR_Kurumsal_Ece", "echo": "M_TR_Heyecanli_Can",
+        "fable": "M_TR_Enerjik_Mert", "onyx": "M_TR_Tok_Kadir",
+        "nova": "F_TR_Parlak_Zeynep", "shimmer": "F_TR_Genc_Selin"
     }
+    final_speaker = openai_map.get(request.voice.lower(), request.voice)
     
-    final_speaker = request.voice
-    if request.voice.lower() in openai_map:
-        final_speaker = openai_map[request.voice.lower()]
-    
-    # Fallback: Eğer speaker sistemde yoksa var olan ilk speaker'ı al
     available_speakers = tts_engine.get_speakers()
-    # Speaker adını '/' ile ayırıp ana isme bak (stil varsa)
     base_speaker = final_speaker.split('/')[0]
     if base_speaker not in available_speakers:
         if available_speakers:
@@ -234,46 +226,28 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
             logger.warning(f"Speaker '{final_speaker}' not found. Falling back to '{fallback}'")
             final_speaker = fallback
         else:
-             final_speaker = "system_default" # Engine fallback'i
+             final_speaker = "system_default"
 
     # 3. Format Zorlaması (MP3 & No-Stream)
-    # Tarayıcılar en iyi MP3 sever. WebUI bazen formatı boş gönderir.
     output_fmt = "mp3"
-    
     logger.info(f"OpenAI TTS: '{request.input[:15]}...' -> {final_speaker} ({detected_lang}) -> {output_fmt} (Buffered)")
 
-    # İç İsteği Oluştur
     internal_req = TTSRequest(
-        text=request.input,
-        language=detected_lang,
-        speaker_idx=final_speaker,
-        stream=False, # <--- KRİTİK: Streaming'i kapatıyoruz. Tam dosya oluşturulacak.
-        speed=request.speed if request.speed else settings.DEFAULT_SPEED,
+        text=request.input, language=detected_lang, speaker_idx=final_speaker,
+        stream=False, speed=request.speed if request.speed else settings.DEFAULT_SPEED,
         output_format=output_fmt
     )
     
-    # Sesi Üret (Buffer'da)
     start_time = time.perf_counter()
     try:
-        # Engine parametrelerini hazırla
         params = internal_req.model_dump()
-        
-        # Sentezle (Bloklayıcı işlem ama güvenli thread)
         audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
-        
         process_time = time.perf_counter() - start_time
         logger.info(f"TTS Generated in {process_time:.2f}s | Size: {len(audio_bytes)} bytes")
-
-        # MP3 Header'ları ile tam yanıt
         return Response(
-            content=audio_bytes, 
-            media_type="audio/mpeg",
-            headers={
-                "Content-Disposition": "inline; filename=speech.mp3",
-                "X-VCA-Time": f"{process_time:.3f}"
-            }
+            content=audio_bytes, media_type="audio/mpeg",
+            headers={"Content-Disposition": "inline; filename=speech.mp3", "X-VCA-Time": f"{process_time:.3f}"}
         )
-        
     except Exception as e:
         logger.error(f"TTS Generation Failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -320,46 +294,26 @@ async def delete_history_entry(filename: str):
 
 @router.post("/api/tts")
 async def generate_speech(request: TTSRequest):
-    """
-    Standart Sentiric API (Streaming destekler).
-    Internal servisler ve Studio burayı kullanır.
-    """
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=422, detail="Text cannot be empty.")
     
     start_time = time.perf_counter()
     params = request.model_dump()
     
-    # Format belirle
-    ext = "wav"
-    media_type = "audio/wav"
-    if request.output_format == "mp3": ext="mp3"; media_type="audio/mpeg"
-    elif request.output_format == "opus": ext="opus"; media_type="audio/ogg"
-    elif request.output_format == "pcm": ext="pcm"; media_type="application/octet-stream"
-
-    safe_filename = generate_deterministic_filename(params, ext)
-    filepath = os.path.join(HISTORY_DIR, safe_filename)
-
-    # 1. CACHE CHECK
-    if os.path.exists(filepath):
-        if os.path.getsize(filepath) < 44: # Bozuk dosya kontrolü
-            try: os.remove(filepath)
-            except: pass
-        else:
-            history_manager.add_entry(safe_filename, request.text, request.speaker_idx, "Cached")
-            logger.info(f"⚡ Cache Hit: {safe_filename}")
-            audio_bytes = await asyncio.to_thread(lambda: open(filepath, "rb").read())
-            final_response = Response(content=audio_bytes, media_type=media_type)
-            final_response.headers["X-Cache"] = "HIT"
-            final_response.headers["X-VCA-Time"] = "0.001"
-            return final_response
-
-    # 2. GENERATION
     try:
+        # *** KRİTİK DÜZELTME BAŞLANGICI ***
         if request.stream:
-            # Streaming Logic (Gateway'ler için önemli)
+            # Streaming istekleri için önbelleği HER ZAMAN baypas et.
+            # Önbellekte WAV header'lı dosya olabilir, bu da stream client'ını bozar.
+            logger.info("⚡ Stream request: Bypassing cache, generating fresh audio.")
+            
             async def stream_and_save():
                 accumulated_bytes = bytearray()
+                # Dosya adını stream bittiğinde lazım olacağı için burada oluşturuyoruz.
+                ext = "wav" # Geçmişe her zaman WAV olarak kaydet
+                safe_filename = generate_deterministic_filename(params, ext)
+                filepath = os.path.join(HISTORY_DIR, safe_filename)
+
                 try:
                     for chunk in tts_engine.synthesize_stream(params):
                         accumulated_bytes.extend(chunk)
@@ -380,7 +334,28 @@ async def generate_speech(request: TTSRequest):
                 headers={"X-Stream-Start": str(start_time)}
             )
         else:
-            # Non-Streaming Logic
+            # Non-Streaming Logic (Önbellek burada KULLANILIR)
+            ext = "wav"
+            media_type = "audio/wav"
+            if request.output_format == "mp3": ext="mp3"; media_type="audio/mpeg"
+            elif request.output_format == "opus": ext="opus"; media_type="audio/ogg"
+            elif request.output_format == "pcm": ext="pcm"; media_type="application/octet-stream"
+
+            safe_filename = generate_deterministic_filename(params, ext)
+            filepath = os.path.join(HISTORY_DIR, safe_filename)
+
+            # 1. CACHE CHECK
+            if os.path.exists(filepath):
+                if os.path.getsize(filepath) > 44: # Bozuk dosya kontrolü
+                    history_manager.add_entry(safe_filename, request.text, request.speaker_idx, "Cached")
+                    logger.info(f"⚡ Cache Hit: {safe_filename}")
+                    audio_bytes = await asyncio.to_thread(lambda: open(filepath, "rb").read())
+                    final_response = Response(content=audio_bytes, media_type=media_type)
+                    final_response.headers["X-Cache"] = "HIT"
+                    final_response.headers["X-VCA-Time"] = "0.001"
+                    return final_response
+            
+            # 2. GENERATION (Cache Miss)
             audio_bytes = await asyncio.to_thread(tts_engine.synthesize, params)
             metrics = calculate_vca_metrics(start_time, len(request.text), audio_bytes, request.sample_rate)
             
@@ -409,7 +384,6 @@ async def generate_speech_clone(
     saved_files = []
     
     try:
-        # Dosyaları kaydet
         for file in files:
             file_ext = os.path.splitext(file.filename)[1] or ".wav"
             file_path = os.path.join(UPLOAD_DIR, f"{uuid.uuid4()}{file_ext}")

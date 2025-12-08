@@ -6,9 +6,7 @@ class UI {
 
         $('app-version').innerText = `v${config.version}`;
         
-        // 1. Dilleri Doldur (Dinamik)
         const langSelect = $('global-lang');
-        
         if (config.limits.supported_languages) {
             langSelect.innerHTML = '';
             config.limits.supported_languages.forEach(lang => {
@@ -20,15 +18,13 @@ class UI {
             });
         }
 
-        // 2. Sliderları Ayarla (Config'den gelen varsayılanlar)
         const d = config.defaults;
         this._setupSlider('speed', d.speed, 0.25, 4.0, 0.1);
         this._setupSlider('temp', d.temperature, 0.01, 2.0, 0.05);
-        this._setupSlider('rep_pen', d.repetition_penalty, 1.0, 10.0, 0.1); // Advanced
-        this._setupSlider('top_p', d.top_p, 0.01, 1.0, 0.05); // Advanced
-        this._setupSlider('top_k', d.top_k, 1, 100, 1); // Advanced
+        this._setupSlider('rep_pen', d.repetition_penalty, 1.0, 10.0, 0.1);
+        this._setupSlider('top_p', d.top_p, 0.01, 1.0, 0.05);
+        this._setupSlider('top_k', d.top_k, 1, 100, 1);
         
-        // 3. Stream Checkbox
         const streamCheck = $('stream');
         if(streamCheck) streamCheck.checked = config.system.streaming_enabled;
     }
@@ -40,11 +36,6 @@ class UI {
         el.max = max;
         el.step = step;
         el.value = def;
-        
-        // Label'ı bul ve güncelle
-        // İsimlendirme standardı: val-{id}
-        const labelId = `val-${id.replace('_', '')}`; // rep_pen -> val-reppen uyumsuzluğu olmasın diye id'yi temizlemiyoruz, HTML'de düzgün verdik.
-        // HATA DUZELTME: HTML'de id'ler 'val-rep', 'val-topp' şeklinde. Mapping yapalım.
         
         let labelTarget = `val-${id}`;
         if(id === 'rep_pen') labelTarget = 'val-rep';
@@ -76,28 +67,32 @@ class UI {
 
     static showToast(message, type = 'info') {
         const container = $('toast-container');
+        if (!container) return;
         const toast = document.createElement('div');
         
         let colorClass = "border-blue-500";
         if(type === 'error') colorClass = "border-red-500 bg-red-900/20 text-red-200";
         if(type === 'success') colorClass = "border-green-500 bg-green-900/20 text-green-200";
 
-        toast.className = `toast mb-3 p-4 rounded-lg border-l-4 ${colorClass} bg-[#18181b] shadow-2xl flex items-center justify-between min-w-[300px] animate-slideIn`;
+        toast.className = `fixed bottom-5 right-5 mb-3 p-4 rounded-lg border-l-4 ${colorClass} bg-[#18181b] shadow-2xl flex items-center justify-between min-w-[300px] animate-slideUp z-[200]`;
         toast.innerHTML = `<span class="text-xs font-bold">${message}</span>`;
         
         const closeBtn = document.createElement('button');
         closeBtn.innerHTML = '×';
         closeBtn.className = "ml-4 text-lg opacity-50 hover:opacity-100";
-        closeBtn.onclick = () => toast.remove();
+        closeBtn.onclick = () => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 300); };
         toast.appendChild(closeBtn);
 
-        container.appendChild(toast);
+        document.body.appendChild(toast); // Toast container yerine body'e ekle
 
         setTimeout(() => {
-            toast.style.opacity = '0';
-            setTimeout(() => toast.remove(), 500);
+            if (toast) {
+                toast.style.opacity = '0';
+                setTimeout(() => toast.remove(), 300);
+            }
         }, 5000);
     }
+
 
     static setBootState(isLoading, statusText = "") {
         const overlay = $('boot-overlay');
@@ -112,16 +107,21 @@ class UI {
         }
     }
 
-    static setPlayingState(isPlaying) {
+    static setPlayingState(isPlaying, isHistory = false) {
         const btn = $('genBtn');
+        if (!btn) return;
+
         if(isPlaying) {
-            btn.innerHTML = `<div class="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin"></div><span>PROCESSING</span>`;
-            btn.disabled = true;
+            btn.innerHTML = `<svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"></path></svg> <span>STOP</span>`;
+            btn.classList.add('bg-red-600', 'hover:bg-red-500');
+            btn.classList.remove('bg-white', 'text-black', 'hover:bg-blue-500');
         } else {
             btn.innerHTML = `<span>GENERATE AUDIO</span>`;
-            btn.disabled = false;
+            btn.classList.remove('bg-red-600', 'hover:bg-red-500');
+            btn.classList.add('bg-white', 'text-black', 'hover:bg-blue-500');
         }
     }
+
 
     static populateSpeakers(data) {
         const map = data.speakers;

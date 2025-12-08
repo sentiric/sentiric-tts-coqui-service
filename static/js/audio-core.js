@@ -2,21 +2,40 @@
 window._audioContext = null;
 window._mediaRecorder = null;
 let analyser = null;
+
+// --- JITTER BUFFER & GAPLESS PLAYBACK STATE ---
 let nextStartTime = 0; 
 let isDownloadFinished = false;
-let sourceNodes = []; 
+let activeSourceNodes = []; 
+let isStopRequested = false;
+
+// --- BAŞLATMA TAMPONU (PRIMING BUFFER) ---
+let primingBuffer = [];
+let isPlaybackStarted = false;
+
+// *** KRİTİK DÜZELTME: Tampon boyutunu artırarak modelin cümleler arası "düşünme" süresini absorbe et. ***
+var PRIMING_BUFFER_DURATION_MS = 1000; // Daha düşük ilk saniyede jitter oluyor
+
 
 function initAudioContext() {
-    if (!window._audioContext) {
-        window._audioContext = new (window.AudioContext || window.webkitAudioContext)();
-        analyser = window._audioContext.createAnalyser();
-        analyser.fftSize = 256;
-        analyser.smoothingTimeConstant = 0.8;
-        initVisualizer();
+    if (!window._audioContext || window._audioContext.state === 'closed') {
+        try {
+            window._audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = window._audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            analyser.smoothingTimeConstant = 0.8;
+            // Analizör çıkışını ana hedefe bağla. Bu sadece bir kere yapılır.
+            analyser.connect(window._audioContext.destination);
+            initVisualizer();
+            console.log("AudioContext Initialized. State:", window._audioContext.state);
+        } catch (e) {
+            console.error("Failed to initialize AudioContext:", e);
+            return;
+        }
     }
-    // ÖNEMLİ: Tarayıcının context'i askıya almasını (suspend) engellemek için her seferinde resume dene
+    
     if (window._audioContext.state === 'suspended') { 
-        window._audioContext.resume().catch(e => console.warn("Audio resume failed", e)); 
+        window._audioContext.resume().catch(e => console.warn("AudioContext resume failed:", e)); 
     }
 }
 
@@ -26,69 +45,102 @@ function notifyDownloadFinished() {
 }
 
 function checkIfPlaybackFinished() {
-    if (isDownloadFinished && sourceNodes.length === 0) {
-        if (window.onAudioPlaybackComplete) window.onAudioPlaybackComplete();
+    if (!isPlaybackStarted && isDownloadFinished && primingBuffer.length > 0) {
+        console.log("Priming Buffer: Flushing remaining audio at stream end.");
+        _startPlaybackFromPrimingBuffer(24000);
+    }
+
+    if (isDownloadFinished && activeSourceNodes.length === 0) {
+        console.log("Jitter Buffer: Playback queue finished.");
+        if (window.onAudioPlaybackComplete) {
+            window.onAudioPlaybackComplete();
+        }
     }
 }
 
-async function playChunk(float32Array, sampleRate) {
-    // 1. Context'in hazır olduğundan emin ol
-    initAudioContext();
-    if (window.isStopRequested) return;
-
+function _schedulePlayback(float32Array, sampleRate) {
     const ctx = window._audioContext;
-    
-    // 2. Buffer Oluştur
-    const buffer = ctx.createBuffer(1, float32Array.length, sampleRate || 24000);
+    if (!ctx || ctx.state === 'closed') return;
+
+    const buffer = ctx.createBuffer(1, float32Array.length, sampleRate);
     buffer.getChannelData(0).set(float32Array);
     
-    // 3. Source Oluştur
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    source.connect(analyser);
-    analyser.connect(ctx.destination);
+    // *** BAĞLANTI DÜZELTMESİ: Ses akışı seri olmalı: source -> analyser -> destination ***
+    source.connect(analyser); 
     
-    // 4. JITTER BUFFERING / GAPLESS PLAYBACK MANTIĞI
-    const currentTime = ctx.currentTime;
-    
-    // Eğer nextStartTime geçmişte kaldıysa (takılma olduysa), resetle ve hemen başlat.
-    // Ancak çok küçük gecikmeler (0.1s) tolere edilebilir.
-    if (nextStartTime < currentTime) {
-        nextStartTime = currentTime + 0.05; // 50ms ön-tampon (Anti-pop)
-    }
-
     source.start(nextStartTime);
-    
-    // Bir sonraki parçanın başlama zamanını güncelle
     nextStartTime += buffer.duration;
     
-    sourceNodes.push(source);
+    activeSourceNodes.push(source);
     
     source.onended = () => {
-        const index = sourceNodes.indexOf(source);
-        if (index > -1) sourceNodes.splice(index, 1);
+        const index = activeSourceNodes.indexOf(source);
+        if (index > -1) activeSourceNodes.splice(index, 1);
+        source.disconnect();
         checkIfPlaybackFinished();
     };
 }
 
-function resetAudioState() {
-    window.isStopRequested = true;
-    isDownloadFinished = false;
+function _startPlaybackFromPrimingBuffer(sampleRate) {
+    const ctx = window._audioContext;
+    if (primingBuffer.length === 0 || !ctx) return;
     
-    // Tüm aktif sesleri durdur
-    sourceNodes.forEach(node => { 
-        try { node.stop(); node.disconnect(); } catch(e) {} 
-    });
-    sourceNodes = [];
-    nextStartTime = 0;
+    const currentTime = ctx.currentTime;
+    const WAKE_UP_DELAY = 0.1; // 100ms
+    nextStartTime = currentTime + WAKE_UP_DELAY;
+
+    const totalLength = primingBuffer.reduce((sum, arr) => sum + arr.length, 0);
+    const concatenatedBuffer = new Float32Array(totalLength);
+    let offset = 0;
+    for (const chunk of primingBuffer) {
+        concatenatedBuffer.set(chunk, offset);
+        offset += chunk.length;
+    }
     
-    // Context'i kapatma, sadece durumu sıfırla. 
-    // Context kapatılırsa (close), tekrar oluşturmak maliyetlidir.
-    
-    setTimeout(() => { window.isStopRequested = false; }, 100);
+    console.log(`Priming Buffer: Full. Scheduling playback in ${WAKE_UP_DELAY * 1000}ms.`);
+    _schedulePlayback(concatenatedBuffer, sampleRate);
+
+    primingBuffer = [];
 }
 
-// Visualizer (Değişmedi)
+async function playChunk(float32Array, sampleRate) {
+    initAudioContext();
+    if (isStopRequested) return;
+
+    if (!isPlaybackStarted) {
+        primingBuffer.push(float32Array);
+        const currentBufferedDuration = primingBuffer.reduce((sum, arr) => sum + arr.length, 0) / sampleRate * 1000;
+
+        if (currentBufferedDuration >= PRIMING_BUFFER_DURATION_MS) {
+            isPlaybackStarted = true;
+            _startPlaybackFromPrimingBuffer(sampleRate);
+        }
+    } else {
+        _schedulePlayback(float32Array, sampleRate);
+    }
+}
+
+function resetAudioState() {
+    isStopRequested = true;
+    isDownloadFinished = false;
+    
+    activeSourceNodes.forEach(node => { 
+        try { node.stop(0); node.disconnect(); } catch(e) {} 
+    });
+    activeSourceNodes = [];
+    nextStartTime = 0;
+    
+    primingBuffer = [];
+    isPlaybackStarted = false;
+    
+    console.log("Jitter & Priming Buffer: State Reset.");
+    
+    setTimeout(() => { isStopRequested = false; }, 100);
+}
+
+// Visualizer (Değişiklik yok)
 function initVisualizer() {
     const canvas = document.getElementById('visualizer');
     if(!canvas) return;
@@ -115,7 +167,7 @@ function initVisualizer() {
     draw();
 }
 
-// ... Mic Recording functions remain same ...
+// Mic Recording functions (değişiklik yok)
 async function startRecording() {
     if (!navigator.mediaDevices) return UI.showToast("Mic denied", "error");
     try {

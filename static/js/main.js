@@ -1,5 +1,5 @@
 /**
- * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.5 (Playback Stability Fix)
+ * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.8 (Async Logic Fix)
  */
 
 const State = {
@@ -7,6 +7,14 @@ const State = {
     abortController: null,
     config: null 
 };
+
+// Playback bittiğinde bu fonksiyon çağrılacak
+window.onAudioPlaybackComplete = function() {
+    console.log("Main controller notified: Playback finished.");
+    // isUserInitiated=false, çünkü bu sistem tarafından tetiklenen bir durdurma.
+    Controllers.stopPlayback(false); 
+};
+
 
 const Controllers = {
     
@@ -21,9 +29,6 @@ const Controllers = {
             await this.loadSpeakers();
             await this.loadHistory();
             
-            // Kullanıcı etkileşimi olmadan context başlatılamaz, burada sadece tanımlıyoruz
-            // if (window.initAudioContext) window.initAudioContext(); 
-
             UI.setBootState(false);
 
         } catch (e) {
@@ -82,35 +87,39 @@ const Controllers = {
         const player = document.getElementById('classicPlayer');
         if (player) {
             player.src = url;
-            player.load(); // Explicit load
+            player.load();
             player.play().catch(e => console.error("History playback failed:", e));
+            player.onended = () => this.stopPlayback(false);
+            State.isPlaying = true;
+            UI.setPlayingState(true, true);
         }
     },
 
     stopPlayback(isUserInitiated = true) {
         if (isUserInitiated) {
+            console.log("Playback stopped by user.");
             if (State.abortController) {
                 State.abortController.abort();
                 State.abortController = null;
             }
-            if (window.resetAudioState) window.resetAudioState();
-            
-            const player = document.getElementById('classicPlayer');
-            if (player) { 
-                player.pause(); 
-                player.currentTime = 0; 
-                player.removeAttribute('src'); // Kaynağı temizle
-                player.load();
-            }
         }
-        UI.setPlayingState(false);
+        
+        if (window.resetAudioState) window.resetAudioState();
+        
+        const player = document.getElementById('classicPlayer');
+        if (player && !player.paused) { 
+            player.pause(); 
+            player.currentTime = 0;
+            player.removeAttribute('src');
+            player.load();
+        }
+        
         State.isPlaying = false;
+        UI.setPlayingState(false);
     },
 
     async handleGenerate() {
-        // [DOUBLE CLICK PROTECTION]
-        const btn = document.getElementById('genBtn');
-        if (btn.disabled || State.isPlaying) {
+        if (State.isPlaying) {
             this.stopPlayback(true);
             return;
         }
@@ -118,24 +127,15 @@ const Controllers = {
         const text = document.getElementById('textInput').value.trim();
         if (!text) return UI.showToast("Please enter text", "error");
 
-        if (window.initAudioContext) {
-            window.initAudioContext();
-            if (window._audioContext && window._audioContext.state === 'suspended') {
-                await window._audioContext.resume();
-            }
-        }
-
-        UI.setPlayingState(true);
-        State.isPlaying = true;
-        btn.disabled = true; // KİLİTLE
+        if (window.initAudioContext) window.initAudioContext();
         
+        State.isPlaying = true;
+        UI.setPlayingState(true);
         if (window.resetAudioState) window.resetAudioState();
+        
+        let isActuallyStreaming = false; // Scope'u genişlet
 
         try {
-            // ... (Parametre hazırlama ve API isteği kısmı aynı) ...
-            // Kod tasarrufu için önceki bloğu hatırlayın, 
-            // sadece try-finally bloğundaki kilit açmayı ekliyorum.
-            
             State.abortController = new AbortController();
             const spkName = document.getElementById('speaker').value;
             const styleSelect = document.getElementById('style-select');
@@ -145,55 +145,60 @@ const Controllers = {
                 finalSpeaker = `${spkName}/${styleSelect.value}`;
             }
 
+            const nativeSampleRate = State.config.defaults.sample_rate || 24000;
             const params = {
-                text: text,
-                language: document.getElementById('global-lang').value || 'en',
+                text: text, language: document.getElementById('global-lang').value || 'en',
                 temperature: parseFloat(document.getElementById('temp').value),
                 speed: parseFloat(document.getElementById('speed').value),
                 top_k: parseInt(document.getElementById('top_k').value) || 50,
                 top_p: parseFloat(document.getElementById('top_p').value) || 0.8,
                 repetition_penalty: parseFloat(document.getElementById('rep_pen').value) || 2.0,
-                stream: document.getElementById('stream').checked,
-                output_format: 'wav',
-                speaker_idx: finalSpeaker,
-                sample_rate: State.config ? State.config.defaults.sample_rate : 24000 
+                stream: document.getElementById('stream').checked, output_format: 'pcm', 
+                speaker_idx: finalSpeaker, sample_rate: nativeSampleRate
             };
+            
+            if (!params.stream) params.output_format = 'mp3';
 
             const response = await API.generateTTS(params, State.abortController.signal);
             const isCacheHit = response.headers.get("X-Cache") === "HIT";
-            const contentType = response.headers.get("Content-Type");
-            const isActuallyStreaming = params.stream && !isCacheHit && contentType && contentType.includes("octet-stream");
+            isActuallyStreaming = params.stream && !isCacheHit;
 
             if (isActuallyStreaming) {
                  const reader = response.body.getReader();
                  let leftover = new Uint8Array(0);
+                 
                  while (true) {
+                     if (isStopRequested) { console.log("Stream reading aborted."); break; }
                      const { done, value } = await reader.read();
                      if (done) break;
+                     
                      if (value && value.length > 0) {
-                         const chunk = new Uint8Array(leftover.length + value.length);
-                         chunk.set(leftover);
-                         chunk.set(value, leftover.length);
-                         const remainder = chunk.length % 2;
-                         const processData = chunk.subarray(0, chunk.length - remainder);
-                         leftover = chunk.subarray(chunk.length - remainder);
+                         const combined = new Uint8Array(leftover.length + value.length);
+                         combined.set(leftover);
+                         combined.set(value, leftover.length);
+                         const remainder = combined.length % 2;
+                         const processData = combined.subarray(0, combined.length - remainder);
+                         leftover = combined.subarray(combined.length - remainder);
                          const int16Data = new Int16Array(processData.buffer);
                          const float32Data = new Float32Array(int16Data.length);
                          for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768.0;
-                         
                          if (window.playChunk) await window.playChunk(float32Data, params.sample_rate);
                      }
                  }
+                 if (window.notifyDownloadFinished) window.notifyDownloadFinished();
                  await this.loadHistory();
-            } else {
+            } else { // Non-streaming
                 const blob = await response.blob();
                 const url = URL.createObjectURL(blob);
                 const player = document.getElementById('classicPlayer');
-                player.pause();
                 player.src = url;
                 player.load(); 
+                player.onended = () => this.stopPlayback(false);
                 try { await player.play(); } 
-                catch (e) { console.warn("Auto-play prevented", e); }
+                catch (e) { 
+                    console.warn("Auto-play prevented", e);
+                    this.stopPlayback(false);
+                }
                 await this.loadHistory();
             }
 
@@ -201,10 +206,19 @@ const Controllers = {
             if (err.name !== 'AbortError') {
                 console.error(err);
                 UI.showToast(err.message, "error");
+                this.stopPlayback(false); // Sadece hata durumunda durdur
             }
         } finally {
-            this.stopPlayback(false);
-            btn.disabled = false; // KİLİDİ AÇ
+            // *** KRİTİK DÜZELTME ***
+            // `stopPlayback` çağrısı buradan kaldırıldı. Stream'in bitmesini beklemeden
+            // ses motorunu resetliyordu, bu da periyodik takılmalara neden oluyordu.
+            // Durdurma işlemi artık sadece `onAudioPlaybackComplete` callback'i,
+            // kullanıcı müdahalesi veya bir hata ile tetiklenir.
+            if (!isActuallyStreaming) {
+                // Eğer stream değilse, `onended` olayı zaten `stopPlayback`'i çağırır.
+                // Ama play() hatası verirse diye burada bir fallback olabilir,
+                // şimdilik temiz tutalım. `stopPlayback` hata catch bloğunda var.
+            }
         }
     }
 };
