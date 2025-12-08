@@ -7,14 +7,14 @@ Bu dizin, Sentiric TTS servisinin performansını, kararlılığını ve doğrul
 Modern Linux dağıtımlarında sistem paketlerini korumak için testleri izole bir ortamda çalıştırmanız önerilir.
 
 ```bash
-# 1. Sanal ortam oluştur
+# 1. Sanal ortam oluştur (zaten varsa bu adımı atla)
 python3 -m venv .venv_test
 
 # 2. Ortamı aktif et
 source .venv_test/bin/activate
 
-# 3. Bağımlılıkları kur
-pip install requests rich soundfile numpy
+# 3. Bağımlılıkları kur (gRPC dahil)
+pip install requests rich soundfile numpy grpcio "sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.12.0"
 ```
 
 ## Test Araçları
@@ -23,7 +23,7 @@ pip install requests rich soundfile numpy
 Sistemin hızını (RTF), gecikmesini (Latency) ve yük altındaki dayanıklılığını ölçer.
 
 *   **Komut:** `python3 tests/benchmark.py`
-*   **Çıktı:** Konsol grafikleri ve `benchmark_report.md` dosyası.
+*   **Çıktı:** Konsol grafikleri ve `tests/output/benchmark_report.md` dosyası.
 *   **Kullanım:** Sunucu optimizasyonlarından sonra hızın düşüp düşmediğini kontrol etmek için.
 
 ### 2. Diyagnostik Araç (`diagnostic.py`)
@@ -44,23 +44,8 @@ API'nin hata yönetimi ve veri bütünlüğünü test eder.
     *   Ses üretme, geçmişte bulma ve silme (CRUD Döngüsü).
     *   Bozuk SSML tagleri gönderme (Sistemin çökmemesi beklenir).
 
+### 4. gRPC İstemci Testi (`grpc_client.py`)
+gRPC endpoint'inin doğru çalışıp çalışmadığını kontrol eder.
 
----
-
-python3 tests/test_stream_recording.py
-
----
-
-## Örnek Rapor
-
-```text
-🧪 TEST 1: Girdi Doğrulama
-✅ Boş metin reddedildi (422).
-✅ Aşırı uzun metin reddedildi (422).
-
-🧪 TEST 2: Yaşam Döngüsü
-✅ Ses üretildi.
-✅ Kayıt geçmişte bulundu.
-✅ API 'Silindi' dedi.
-✅ Dosya gerçekten yok (404).
-```
+*   **Komut:** `python3 tests/grpc_client.py`
+*   **Çıktı:** `tests/output/grpc_test_audio.wav` dosyası.

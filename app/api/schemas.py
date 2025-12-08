@@ -37,7 +37,8 @@ class TTSRequest(BaseModel):
     stream: bool = Field(settings.ENABLE_STREAMING, description="Chunked transfer encoding kullanır")
     output_format: str = Field(settings.DEFAULT_OUTPUT_FORMAT, pattern="^(wav|mp3|opus|pcm)$")
     sample_rate: int = Field(settings.DEFAULT_SAMPLE_RATE)
-    split_sentences: bool = Field(True, description="Daha doğal duraklamalar için cümle bölme")
+    # YENİ PARAMETRE: Akış davranışını kontrol eder.
+    split_sentences: bool = Field(True, description="Düşük gecikme için metni cümlelere böl. Uzun metinlerde takılma olursa 'false' deneyin.")
 
 class OpenAISpeechRequest(BaseModel):
     """OpenAI API uyumluluğu için şema"""

@@ -12,9 +12,8 @@ let isStopRequested = false;
 // --- BAŞLATMA TAMPONU (PRIMING BUFFER) ---
 let primingBuffer = [];
 let isPlaybackStarted = false;
-
-// *** KRİTİK DÜZELTME: Tampon boyutunu artırarak modelin cümleler arası "düşünme" süresini absorbe et. ***
-var PRIMING_BUFFER_DURATION_MS = 1000; // Daha düşük ilk saniyede jitter oluyor
+// *** OPTİMUM DEĞER: . ***
+var PRIMING_BUFFER_DURATION_MS = 1000;
 
 
 function initAudioContext() {
@@ -24,7 +23,6 @@ function initAudioContext() {
             analyser = window._audioContext.createAnalyser();
             analyser.fftSize = 256;
             analyser.smoothingTimeConstant = 0.8;
-            // Analizör çıkışını ana hedefe bağla. Bu sadece bir kere yapılır.
             analyser.connect(window._audioContext.destination);
             initVisualizer();
             console.log("AudioContext Initialized. State:", window._audioContext.state);
@@ -67,7 +65,6 @@ function _schedulePlayback(float32Array, sampleRate) {
     
     const source = ctx.createBufferSource();
     source.buffer = buffer;
-    // *** BAĞLANTI DÜZELTMESİ: Ses akışı seri olmalı: source -> analyser -> destination ***
     source.connect(analyser); 
     
     source.start(nextStartTime);

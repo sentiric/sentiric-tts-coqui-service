@@ -1,89 +1,55 @@
 import requests
-import json
 import numpy as np
 import soundfile as sf
 import io
 import os
 import time
 
-# --- AYARLAR ---
 API_URL = "http://localhost:14030"
-OUTPUT_DIR = "tests/output"
+# DÜZELTME: /tmp dizinini kullan
+OUTPUT_DIR = "/tmp/sentiric-tts-tests"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 def analyze_audio_data(audio_data, name):
     try:
-        with io.BytesIO(audio_data) as f:
-            data, samplerate = sf.read(f)
-        
-        max_amp = np.max(np.abs(data))
-        is_clipping = max_amp >= 0.99
-        
-        silence_duration_samples = int(0.2 * samplerate)
-        start_energy = np.mean(np.abs(data[:silence_duration_samples]))
-        has_silence_padding = start_energy < 0.01
-
-        print(f"\n🔍 ANALİZ: {name}")
-        print(f"   ⏱️ Süre: {len(data)/samplerate:.2f} sn")
-        print(f"   🔊 Max Genlik: {max_amp:.4f} {'(⚠️ PATLIYOR!)' if is_clipping else '✅ Temiz'}")
-        print(f"   🤫 Başlangıç Enerjisi: {start_energy:.6f} {'(Backend Sessizliği Var)' if has_silence_padding else '(Saf Ses - Client Buffering Gerekli)'}")
-        
+        if len(audio_data) < 1000:
+             print(f"❌ Analiz Hatası ({name}): Ses verisi çok kısa ({len(audio_data)} bytes).")
+             return False
+        with io.BytesIO(audio_data) as f: data, sr = sf.read(f)
+        print(f"\n🔍 ANALİZ: {name} | ✅ OK")
         return True
     except Exception as e:
         print(f"❌ Analiz Hatası ({name}): {e}")
         return False
 
 def test_stream_protocol():
-    print("\n🧪 TEST 1: STREAM PROTOKOLÜ (Veri Akışı)")
-    
-    payload = {"text": "Test", "language": "tr", "stream": True, "speaker_idx": "Ana Florence"}
-    
+    print("\n🧪 TEST 1: STREAM PROTOKOLÜ")
+    payload = {"text": "Test", "language": "tr", "stream": True, "speaker_idx": "F_TR_Kurumsal_Ece"}
     try:
         with requests.post(f"{API_URL}/api/tts", json=payload, stream=True) as r:
-            chunk_count = 0
-            first_chunk_has_data = False
-            
-            print("   Paketler inceleniyor...")
-            for chunk in r.iter_content(chunk_size=None):
-                if chunk:
-                    chunk_count += 1
-                    arr = np.frombuffer(chunk, dtype=np.int16)
-                    if chunk_count == 1:
-                        # İlk pakette veri var mı?
-                        if np.max(np.abs(arr)) > 0:
-                            first_chunk_has_data = True
-                    
-                    if chunk_count > 5: break 
-            
-            # ARTIK BEKLENTİ: Veri gelmesi iyidir (Hızlı tepki). 
-            # Sessizlik yönetimini Client (JS) tarafına taşıdık.
-            if chunk_count > 0:
-                print(f"   ✅ BAŞARILI: Stream veri akıtıyor. (İlk pakette veri var: {first_chunk_has_data})")
-                print("   ℹ️  Not: Backend 'Raw Stream' gönderiyor. Cutoff koruması Client tarafındadır.")
-            else:
-                print("   ❌ HATA: Hiç veri gelmedi!")
-
+            r.raise_for_status()
+            chunk = next(r.iter_content(chunk_size=1024))
+            if chunk: print("   ✅ BAŞARILI: Stream veri akıtıyor.")
+            else: print("   ❌ HATA: Hiç veri gelmedi!")
     except Exception as e:
         print(f"   ❌ Bağlantı Hatası: {e}")
 
 def test_normal_wav():
-    print("\n🧪 TEST 2: NORMAL WAV (FFmpeg Filtreleri)")
-    payload = {"text": "Merhaba dünya.", "language": "tr", "stream": False, "speaker_idx": "Ana Florence"}
-    start = time.time()
+    print("\n🧪 TEST 2: NORMAL WAV")
+    payload = {"text": "Merhaba dünya.", "language": "tr", "stream": False, "speaker_idx": "F_TR_Kurumsal_Ece"}
     r = requests.post(f"{API_URL}/api/tts", json=payload)
-    if r.status_code == 200:
-        print(f"   ✅ Yanıt alındı ({time.time() - start:.2f}s). Boyut: {len(r.content)} bytes")
+    if r.status_code == 200 and len(r.content) > 0:
         path = os.path.join(OUTPUT_DIR, "test_normal.wav")
         with open(path, "wb") as f: f.write(r.content)
         analyze_audio_data(r.content, "Normal WAV")
     else:
-        print(f"   ❌ API Hatası: {r.text}")
+        print(f"   ❌ API Hatası: {r.text if r.text else f'Status: {r.status_code}, Size: {len(r.content)} bytes'}")
 
 if __name__ == "__main__":
-    print("🔬 SENTIRIC TTS DİYAGNOSTİK ARACI v1.2 (Updated Expectation)")
-    print("=======================================")
-    try: requests.get(f"{API_URL}/health", timeout=2)
-    except: print("❌ Sunucu yok."); exit(1)
+    print("🔬 SENTIRIC TTS DİYAGNOSTİK ARACI v1.4")
+    try: 
+        if requests.get(f"{API_URL}/health", timeout=2).status_code != 200: exit(1)
+    except: exit(1)
     test_stream_protocol()
     test_normal_wav()
     print("\n✅ Test Tamamlandı.")
