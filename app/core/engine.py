@@ -27,7 +27,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("XTTS-ENGINE")
 
 class SmartMemoryManager:
-    def __init__(self, device: str, threshold_mb: int = 5000):
+    def __init__(self, device: str, threshold_mb: int = 4500): # Eşiği biraz düşürdük
         self.device = device
         self.threshold_mb = threshold_mb
         self.request_counter = 0
@@ -36,19 +36,24 @@ class SmartMemoryManager:
     def check_and_clear(self):
         if self.device != "cuda": return
         self.request_counter += 1
-        if self.request_counter % self.gc_frequency == 0:
-            self._force_clean("Periodic")
-            return
+        
+        # *** DÜZELTME: Bellek kontrolünü daha proaktif hale getir. ***
+        # 'torch.cuda.memory_reserved()' yerine 'torch.cuda.memory_allocated()' kullan.
+        # Bu, modelin aktif olarak kullandığı belleği yansıtır ve daha hızlı tepki verir.
         try:
             allocated = torch.cuda.memory_allocated() / (1024 * 1024)
-            if allocated > self.threshold_mb:
-                self._force_clean(f"High VRAM Usage ({int(allocated)}MB)")
+            if allocated > self.threshold_mb or (self.request_counter % self.gc_frequency == 0):
+                reason = f"High VRAM ({int(allocated)}MB)" if allocated > self.threshold_mb else "Periodic"
+                self._force_clean(reason)
         except Exception: pass
 
     def _force_clean(self, reason: str):
-        logger.debug(f"🧹 Memory Cleanup Triggered: {reason}")
+        logger.info(f"🧹 Memory Cleanup Triggered: {reason}. Cleaning cache...")
         gc.collect()
         torch.cuda.empty_cache()
+        # Senkronizasyon, belleğin gerçekten boşaltıldığından emin olmaya yardımcı olur.
+        torch.cuda.synchronize()
+
 
 class TTSEngine:
     _instance = None
@@ -97,7 +102,7 @@ class TTSEngine:
                 
                 if settings.DEVICE == "cuda" and torch.cuda.is_available():
                     self.model.cuda()
-                    self.memory_manager = SmartMemoryManager("cuda", threshold_mb=4800)
+                    self.memory_manager = SmartMemoryManager("cuda", threshold_mb=4500)
                     logger.info("✅ Model GPU'ya yüklendi. Akıllı bellek yönetimi devrede.")
                 else:
                     self.memory_manager = SmartMemoryManager("cpu")
@@ -159,10 +164,9 @@ class TTSEngine:
                 raw_wav_tensor = self._run_inference(conf)
         except RuntimeError as e:
             if "CUDA out of memory" in str(e):
-                logger.warning("⚠️ CUDA OOM detected. Retrying with sentence splitting enabled implicitly.")
+                logger.warning("⚠️ CUDA OOM detected. Forcing sentence splitting and retrying...")
                 self.memory_manager._force_clean("OOM Recovery")
-                # Non-streaming 'inference' her zaman cümle böler, bu yüzden tekrar denemek yeterli olabilir.
-                # Tekrar deneme mantığı OOM'u tetikleyen uzun cümleler için bir şans daha verir.
+                conf["split_sentences"] = True
                 try:
                     with self._gpu_lock:
                          raw_wav_tensor = self._run_inference(conf)
@@ -178,8 +182,7 @@ class TTSEngine:
         final_audio = audio_processor.process_audio(
             wav_data, 
             params.get("output_format", settings.DEFAULT_OUTPUT_FORMAT), 
-            params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE),
-            add_silence=False
+            params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE)
         )
         return final_audio
 
@@ -191,7 +194,6 @@ class TTSEngine:
                 for segment in segments:
                     if segment['type'] == 'text':
                         seg_speed = segment['params'].get("speed", conf['speed'])
-                        # *** NİHAİ DÜZELTME: 'split_sentences' parametresini KALDIR. ***
                         out = self.model.inference(
                             segment['content'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
                             temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
@@ -202,7 +204,6 @@ class TTSEngine:
                         wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
                 raw_wav_tensor = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
             else:
-                 # *** NİHAİ DÜZELTME: 'split_sentences' parametresini KALDIR. ***
                 out = self.model.inference(
                     conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
                     temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
@@ -220,7 +221,6 @@ class TTSEngine:
         with self._gpu_lock:
             try:
                 with torch.inference_mode():
-                    # Stream metodu 'enable_text_splitting' kullanır ve bu DOĞRUDUR.
                     chunks = self.model.inference_stream(
                         conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
                         temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],

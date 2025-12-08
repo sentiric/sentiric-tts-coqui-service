@@ -37,34 +37,26 @@ class AudioProcessor:
 
     @staticmethod
     def process_audio(wav_bytes: bytes, format: str, sample_rate: int, add_silence: bool = False) -> bytes:
-        """
-        PERFORMANS ODAKLI YENİ VERSİYON:
-        Maliyetli FFmpeg subprocess çağrısı yerine torchaudio kullanılır.
-        Sadece format dönüşümü ve sample rate değişikliği yapar. Mastering kaldırıldı.
-        """
         if format == "wav" and sample_rate == 24000:
-            return wav_bytes # Hiçbir işlem gerekmiyorsa doğrudan dön.
+            return wav_bytes
 
         try:
-            # 1. Gelen WAV byte'larını tensöre yükle
             input_buffer = io.BytesIO(wav_bytes)
             waveform, original_sr = torchaudio.load(input_buffer)
 
-            # 2. Sample Rate değişikliği (gerekirse)
             if original_sr != sample_rate:
                 resampler = torchaudio.transforms.Resample(orig_freq=original_sr, new_freq=sample_rate)
                 waveform = resampler(waveform)
 
-            # 3. Format dönüşümü
             output_buffer = io.BytesIO()
             if format == "mp3":
-                torchaudio.save(output_buffer, waveform, sample_rate, format="mp3", compression= -9.0) # VBR quality 0
+                # *** KRİTİK DÜZELTME: Hatalı 'compression' parametresi kaldırıldı. ***
+                # torchaudio'nun varsayılan yüksek kaliteli VBR ayarlarını kullanmasına izin ver.
+                torchaudio.save(output_buffer, waveform, sample_rate, format="mp3")
             elif format == "opus":
                 torchaudio.save(output_buffer, waveform, sample_rate, format="opus")
             elif format == "pcm":
-                 # 16-bit integer'a dönüştür
                 waveform = (waveform * 32767).to(torch.int16)
-                # Direkt byte olarak yaz
                 output_buffer.write(waveform.squeeze().numpy().tobytes())
             else: # wav
                 torchaudio.save(output_buffer, waveform, sample_rate, format="wav")
@@ -73,7 +65,7 @@ class AudioProcessor:
             return output_buffer.read()
             
         except Exception as e:
-            logger.error(f"Audio processing error with torchaudio: {e}. Falling back to input.")
+            logger.error(f"Audio processing error with torchaudio: {e}", exc_info=True)
             return wav_bytes
 
 audio_processor = AudioProcessor()
