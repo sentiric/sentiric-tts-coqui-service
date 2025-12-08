@@ -8,6 +8,9 @@ transformers==4.36.2
 TTS==0.22.0
 scipy>=1.11.0
 langid
+# YENİ: Japonca metin işleme için Coqui'nin zorunlu bağımlılığı
+cutlet
+unidic-lite
 
 # --- API & Server ---
 fastapi>=0.109.0
@@ -19,7 +22,6 @@ pydantic-settings>=2.0.0
 # --- gRPC & Contracts ---
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
-# DÜZELTME: v1.12.0
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.12.0
 
 # --- Monitoring & Logging ---
