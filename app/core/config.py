@@ -14,13 +14,13 @@ class Settings(BaseSettings):
     GRPC_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_GRPC_PORT", "14031"))
     METRICS_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_METRICS_PORT", "14032"))
     
-    # CORS
     CORS_ORIGINS: List[str] = os.getenv("TTS_COQUI_SERVICE_CORS_ORIGINS", "*").split(",")
-
-    # [YENİ] STANDALONE SECURITY
-    # Eğer bu değer set edilirse, API isteklerinde 'X-API-Key' başlığı aranır.
-    # Boş ise (Gateway arkasında) doğrulama yapılmaz.
     API_KEY: Optional[str] = os.getenv("TTS_COQUI_SERVICE_API_KEY", None)
+
+    # --- TLS / mTLS CONFIG ---
+    GRPC_TLS_CA_PATH: str = os.getenv("GRPC_TLS_CA_PATH", "/sentiric-certificates/certs/ca.crt")
+    TTS_COQUI_SERVICE_CERT_PATH: str = os.getenv("TTS_COQUI_SERVICE_CERT_PATH", "/sentiric-certificates/certs/tts-coqui-service.crt")
+    TTS_COQUI_SERVICE_KEY_PATH: str = os.getenv("TTS_COQUI_SERVICE_KEY_PATH", "/sentiric-certificates/certs/tts-coqui-service.key")
 
     # --- MODEL & SYSTEM ---
     MODEL_NAME: str = os.getenv("TTS_COQUI_SERVICE_MODEL_NAME", "tts_models/multilingual/multi-dataset/xtts_v2")
