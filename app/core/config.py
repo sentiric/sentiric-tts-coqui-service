@@ -54,6 +54,11 @@ class Settings(BaseSettings):
     
     def __init__(self, **data):
         super().__init__(**data)
+        # KRİTİK DÜZELTME: Pydantic veriyi yükledikten SONRA temizlik yapıyoruz.
+        # Docker bazen ENV değişkenlerini tırnaklarıyla birlikte gönderir ('"development"').
+        if self.ENV:
+            self.ENV = self.ENV.strip('"').strip("'").lower()
+            
         os.environ["COQUI_TOS_AGREED"] = self.COQUI_TOS_AGREED
 
 settings = Settings()
