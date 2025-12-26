@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import start_http_server
 
 # --- KRİTİK: Loglama Yapılandırması (En Başta) ---
 # Diğer modüller import edilmeden önce log formatını ayarlıyoruz.
@@ -39,7 +40,14 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("🔓 SECURITY: Running in Open/Gateway Mode (No internal auth).")
 
-    # 1. Motoru Başlat
+    # 1. Metrik Sunucusunu Başlat (Harmonic Port Architecture: 14032)
+    try:
+        start_http_server(settings.METRICS_PORT)
+        logger.info(f"📊 Metrics Server exposed on port [bold blue]{settings.METRICS_PORT}[/bold blue]")
+    except Exception as e:
+        logger.error(f"❌ Failed to start metrics server: {e}")
+
+    # 2. Motoru Başlat
     try:
         # Arka planda başlatma opsiyonu yerine bloklayıcı başlatma tercih edildi.
         # Çünkü model olmadan servis "Ready" olmamalıdır.
@@ -50,7 +58,7 @@ async def lifespan(app: FastAPI):
         # Hata durumunda container'ın crash etmesi daha sağlıklıdır (Restart policy devreye girer)
         raise e
 
-    # 2. gRPC Sunucusunu Başlat
+    # 3. gRPC Sunucusunu Başlat
     grpc_task = asyncio.create_task(serve_grpc())
     
     yield
@@ -70,8 +78,9 @@ app = FastAPI(
     redoc_url=None
 )
 
-# --- İZLEME ---
-Instrumentator().instrument(app).expose(app)
+# --- İZLEME (Instrumentation Only) ---
+# expose(app) KALDIRILDI. Metrikler artık ayrı bir HTTP sunucusu (start_http_server) ile sunuluyor.
+Instrumentator().instrument(app)
 
 # --- MIDDLEWARE ---
 app.add_middleware(RequestContextMiddleware)
