@@ -8,14 +8,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from prometheus_fastapi_instrumentator import Instrumentator
 
+# --- KRİTİK: Loglama Yapılandırması (En Başta) ---
+# Diğer modüller import edilmeden önce log formatını ayarlıyoruz.
+from app.core.config import settings
+from app.core.logging_utils import setup_logging
+setup_logging() 
+
 from app.core.engine import tts_engine
 from app.api.endpoints import router as api_router
-from app.core.logging_utils import setup_logging
 from app.core.middleware import RequestContextMiddleware
 from app.grpc_server import serve_grpc
-from app.core.config import settings
 
-setup_logging()
 logger = logging.getLogger("XTTS-APP")
 
 UPLOAD_DIR = "/app/uploads"
@@ -27,21 +30,25 @@ for d in [UPLOAD_DIR, HISTORY_DIR, CACHE_DIR]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info(f"🚀 Starting {settings.APP_NAME} v{settings.APP_VERSION}")
-    logger.info(f"🌍 Environment: {settings.ENV} | Device: {settings.DEVICE}")
+    # Renkli ve yapılandırılmış başlangıç logları
+    logger.info(f"🚀 Starting [bold cyan]{settings.APP_NAME}[/bold cyan] v{settings.APP_VERSION}")
+    logger.info(f"🌍 Environment: [yellow]{settings.ENV}[/yellow] | Device: [green]{settings.DEVICE}[/green]")
     
     if settings.API_KEY:
-        logger.info("🔒 SECURITY: Standalone API Key protection ENABLED.")
+        logger.info("🔒 SECURITY: Standalone API Key protection [bold green]ENABLED[/bold green].")
     else:
-        logger.info("🔓 SECURITY: Running in Open/Gateway Mode (No internal auth).")
+        logger.warning("🔓 SECURITY: Running in Open/Gateway Mode (No internal auth).")
 
     # 1. Motoru Başlat
     try:
         # Arka planda başlatma opsiyonu yerine bloklayıcı başlatma tercih edildi.
         # Çünkü model olmadan servis "Ready" olmamalıdır.
+        logger.info("🧠 Initializing Neural Engine...")
         tts_engine.initialize()
     except Exception as e:
-        logger.critical(f"🔥 CRITICAL: Engine failed to initialize: {e}")
+        logger.critical(f"🔥 CRITICAL: Engine failed to initialize: {e}", exc_info=True)
+        # Hata durumunda container'ın crash etmesi daha sağlıklıdır (Restart policy devreye girer)
+        raise e
 
     # 2. gRPC Sunucusunu Başlat
     grpc_task = asyncio.create_task(serve_grpc())

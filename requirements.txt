@@ -27,6 +27,8 @@ sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v
 # --- Monitoring & Logging ---
 prometheus-fastapi-instrumentator>=6.1.0
 python-json-logger>=2.0.7
+# ARCHITECT UPDATE: Geliştirme ortamı için zengin loglama
+rich>=13.7.0
 
 # --- Utilities ---
 python-dotenv
