@@ -8,6 +8,14 @@ from app.core.config import settings
 # Yakalanacak loglar
 LOGGERS = ("uvicorn.asgi", "uvicorn.access", "uvicorn")
 
+class EndpointFilter(logging.Filter):
+    """
+    Belirli endpoint'lere (örn: /health) yapılan isteklerin loglanmasını engeller.
+    Log kirliliğini önlemek için kullanılır.
+    """
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.getMessage().find("GET /health") == -1
+
 class CustomJsonFormatter(jsonlogger.JsonFormatter):
     """Production için JSON Formatter (Governance Uyumlu)"""
     def add_fields(self, log_record, record, message_dict):
@@ -37,6 +45,7 @@ class RustStyleFormatter(logging.Formatter):
     bold_red = "\x1b[31;1m"
     reset = "\x1b[0m"
 
+    # asctime formatter tarafından değil, aşağıda manuel olarak doldurulacak
     FORMAT = "%(asctime)sZ  %(levelname)-5s  %(name)s: %(message)s"
 
     FORMATS = {
@@ -49,8 +58,11 @@ class RustStyleFormatter(logging.Formatter):
 
     def format(self, record):
         log_fmt = self.FORMATS.get(record.levelno)
-        # ISO 8601 formatına benzer zaman damgası
-        formatter = logging.Formatter(log_fmt, datefmt="%Y-%m-%dT%H:%M:%S.%f")
+        formatter = logging.Formatter(log_fmt)
+        
+        # Mikrosaniye desteği için manuel zaman damgası
+        record.asctime = datetime.fromtimestamp(record.created).strftime('%Y-%m-%dT%H:%M:%S.%f')
+        
         return formatter.format(record)
 
 def setup_logging():
@@ -85,7 +97,10 @@ def setup_logging():
         logging_logger.addHandler(handler)
         logging_logger.propagate = False
 
-    # Gürültü Engelleme
+    # KRİTİK: /health endpoint loglarını 'uvicorn.access' seviyesinde sustur
+    logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
+
+    # Gürültü Engelleme (Diğer Kütüphaneler)
     logging.getLogger("multipart").setLevel(logging.WARNING)
     logging.getLogger("matplotlib").setLevel(logging.WARNING)
     logging.getLogger("numba").setLevel(logging.WARNING)
@@ -93,4 +108,4 @@ def setup_logging():
     # Başlangıç Logu
     logger = logging.getLogger("INIT")
     mode = "DEVELOPMENT (Rust Style)" if settings.ENV == "development" else f"PRODUCTION (JSON) - ENV={settings.ENV}"
-    logger.info(f"Log system initialized in {mode}")
+    logger.info(f"Log system initialized in {mode} (Health logs suppressed)")
