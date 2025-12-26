@@ -2,7 +2,7 @@ import logging
 import sys
 import json
 from datetime import datetime
-from typing import override
+
 from pythonjsonlogger import jsonlogger
 from rich.console import Console
 from rich.logging import RichHandler
