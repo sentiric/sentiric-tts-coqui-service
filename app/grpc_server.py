@@ -61,7 +61,6 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer if coqui_pb2_grpc 
         if not coqui_pb2:
             context.abort(grpc.StatusCode.UNIMPLEMENTED, "Contracts not loaded")
 
-        # Basit implementasyon: Tek parça gönder (XTTS Streaming entegre edilebilir)
         response = self.CoquiSynthesize(request, context)
         yield coqui_pb2.CoquiSynthesizeStreamResponse(
             audio_chunk=response.audio_content,
@@ -77,7 +76,6 @@ def load_tls_credentials():
         with open(settings.GRPC_TLS_CA_PATH, 'rb') as f:
             root_ca = f.read()
 
-        # mTLS: require_client_auth=True
         server_credentials = grpc.ssl_server_credentials(
             [(private_key, certificate_chain)],
             root_certificates=root_ca,
@@ -94,19 +92,30 @@ async def serve_grpc():
         return
 
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=4))
-    
     coqui_pb2_grpc.add_TtsCoquiServiceServicer_to_server(TtsCoquiServicer(), server)
     
     listen_addr = f"[::]:{settings.GRPC_PORT}"
     
-    # GÜVENLİK GÜNCELLEMESİ
-    try:
-        tls_creds = load_tls_credentials()
-        server.add_secure_port(listen_addr, tls_creds)
-        logger.info(f"🔒 gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)")
-    except Exception:
-        logger.error("Failed to initialize secure port, shutting down.")
-        return
+    # [FIX] Insecure Fallback Logic
+    # Sertifika yolları boşsa veya yoksa Insecure başlat
+    use_tls = (
+        settings.TTS_COQUI_SERVICE_KEY_PATH and os.path.exists(settings.TTS_COQUI_SERVICE_KEY_PATH) and
+        settings.TTS_COQUI_SERVICE_CERT_PATH and os.path.exists(settings.TTS_COQUI_SERVICE_CERT_PATH) and
+        settings.GRPC_TLS_CA_PATH and os.path.exists(settings.GRPC_TLS_CA_PATH)
+    )
+
+    if use_tls:
+        try:
+            tls_creds = load_tls_credentials()
+            server.add_secure_port(listen_addr, tls_creds)
+            logger.info(f"🔒 gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)")
+        except Exception:
+            logger.error("Failed to initialize secure port, shutting down.")
+            return
+    else:
+        # INSECURE MODE
+        logger.warning(f"⚠️ TLS paths missing or invalid. Starting gRPC Server (Coqui) on {listen_addr} (INSECURE)")
+        server.add_insecure_port(listen_addr)
 
     await server.start()
     

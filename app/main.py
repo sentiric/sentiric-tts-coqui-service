@@ -1,7 +1,15 @@
+import torchaudio
+try:
+    torchaudio.set_audio_backend("soundfile")
+except:
+    pass
+
+
 import logging
 import shutil
 import os
 import asyncio
+
 from fastapi import FastAPI, Response, status
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware

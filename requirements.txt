@@ -33,3 +33,6 @@ python-json-logger>=2.0.7
 python-dotenv
 ffmpeg-python
 defusedxml>=0.7.1
+
+# FFmpeg kurulumunun doğru olduğundan emin olalım
+soundfile>=0.12.1
