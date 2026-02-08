@@ -23,11 +23,10 @@ from app.core.normalizer import normalizer
 from app.core.audio import audio_processor
 from app.core.ssml_handler import ssml_handler
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("XTTS-ENGINE")
 
 class SmartMemoryManager:
-    def __init__(self, device: str, threshold_mb: int = 4500): # Eşiği biraz düşürdük
+    def __init__(self, device: str, threshold_mb: int = 4500):
         self.device = device
         self.threshold_mb = threshold_mb
         self.request_counter = 0
@@ -36,10 +35,6 @@ class SmartMemoryManager:
     def check_and_clear(self):
         if self.device != "cuda": return
         self.request_counter += 1
-        
-        # *** DÜZELTME: Bellek kontrolünü daha proaktif hale getir. ***
-        # 'torch.cuda.memory_reserved()' yerine 'torch.cuda.memory_allocated()' kullan.
-        # Bu, modelin aktif olarak kullandığı belleği yansıtır ve daha hızlı tepki verir.
         try:
             allocated = torch.cuda.memory_allocated() / (1024 * 1024)
             if allocated > self.threshold_mb or (self.request_counter % self.gc_frequency == 0):
@@ -51,9 +46,7 @@ class SmartMemoryManager:
         logger.info(f"🧹 Memory Cleanup Triggered: {reason}. Cleaning cache...")
         gc.collect()
         torch.cuda.empty_cache()
-        # Senkronizasyon, belleğin gerçekten boşaltıldığından emin olmaya yardımcı olur.
         torch.cuda.synchronize()
-
 
 class TTSEngine:
     _instance = None
@@ -71,6 +64,8 @@ class TTSEngine:
             cls._instance.last_cache_update = 0
             cls._instance.CACHE_TTL = 60
             cls._instance.memory_manager = None
+            # [DEEP VOICE FIX]: Modelin doğal örnekleme hızını saklamak için alan.
+            cls._instance.native_sample_rate = 24000 
         return cls._instance
 
     def initialize(self):
@@ -89,6 +84,10 @@ class TTSEngine:
                 model_path = os.path.join(get_user_data_dir("tts"), model_name.replace("/", "--"))
                 config = XttsConfig()
                 config.load_json(os.path.join(model_path, "config.json"))
+
+                # [DEEP VOICE FIX]: Modelin doğal örnekleme hızını config'den dinamik olarak al.
+                self.native_sample_rate = config.audio.sample_rate
+                logger.info(f"✅ Model Native Sample Rate: {self.native_sample_rate} Hz")
                 
                 self.model = Xtts.init_from_config(config)
                 self.model.load_checkpoint(
@@ -113,6 +112,61 @@ class TTSEngine:
                 logger.critical(f"🔥 Model init failed: {e}")
                 raise e
 
+    def synthesize_stream(self, params: dict, speaker_wavs=None):
+        conf = self._prepare_inference(params, speaker_wavs)
+        
+        with self._gpu_lock:
+            try:
+                with torch.inference_mode():
+                    chunks = self.model.inference_stream(
+                        conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
+                        temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
+                        top_k=conf['top_k'], top_p=conf['top_p'], speed=conf['speed'],
+                        enable_text_splitting=conf['split_sentences']
+                    )
+                    
+                    # [DEEP VOICE FIX]: İstenen örnekleme hızını al. 0 ise modelin doğal hızını kullan.
+                    target_sr = params.get("sample_rate") or self.native_sample_rate
+                    resampler = None
+                    if self.native_sample_rate != target_sr:
+                        logger.info(f"Audio stream will be resampled from {self.native_sample_rate}Hz to {target_sr}Hz.")
+                        resampler = torchaudio.transforms.Resample(orig_freq=self.native_sample_rate, new_freq=target_sr)
+
+                    last_chunk_np = None
+                    for chunk in chunks:
+                        wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
+                        if np.max(np.abs(wav_chunk_float)) < 0.005: continue
+                        if last_chunk_np is not None:
+                            tensor_chunk = torch.from_numpy(last_chunk_np)
+                            if resampler:
+                                if tensor_chunk.ndim == 1: tensor_chunk = tensor_chunk.unsqueeze(0)
+                                tensor_chunk = resampler(tensor_chunk)
+                            
+                            np.clip(tensor_chunk.numpy(), -1.0, 1.0, out=last_chunk_np)
+                            yield (tensor_chunk.numpy() * 32767).astype(np.int16).tobytes()
+                        last_chunk_np = wav_chunk_float
+                    
+                    if last_chunk_np is not None:
+                        logger.debug("🔪 Cleaning last stream chunk (Fade-Out)...")
+                        last_tensor = torch.from_numpy(last_chunk_np)
+                        cleaned_tensor = self._clean_and_trim_tensor(last_tensor, threshold=0.025, fade_len=int(self.native_sample_rate * 0.1))
+                        
+                        if resampler:
+                            if cleaned_tensor.ndim == 1: cleaned_tensor = cleaned_tensor.unsqueeze(0)
+                            cleaned_tensor = resampler(cleaned_tensor)
+                        
+                        cleaned_np = cleaned_tensor.numpy()
+                        np.clip(cleaned_np, -1.0, 1.0, out=cleaned_np)
+                        yield (cleaned_np * 32767).astype(np.int16).tobytes()
+                    
+                    self.memory_manager.check_and_clear()
+            except Exception:
+                logger.error(f"Stream error", exc_info=True)
+                yield b""
+
+    # Diğer fonksiyonlar (`_prepare_inference`, `synthesize`, `_run_inference` vb.) aynı kalabilir,
+    # Sadece `synthesize_stream`'i bu şekilde güncellemek yeterlidir çünkü `gRPC` sunucumuz sadece onu kullanıyor.
+    # ... (Geri kalan tüm fonksiyonları buraya kopyalayın, değişiklik yapmayın) ...
     def _prepare_inference(self, params: dict, speaker_wavs=None) -> Dict[str, Any]:
         p_lang = params.get("language", settings.DEFAULT_LANGUAGE)
         text = normalizer.normalize(params.get("text", ""), p_lang)
@@ -140,21 +194,16 @@ class TTSEngine:
     def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
         if wav_tensor.numel() == 0: return wav_tensor
         if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
-
         wav_np = wav_tensor.numpy()
         abs_wav = np.abs(wav_np)
-        
         mask = abs_wav > threshold
         if not np.any(mask): return wav_tensor 
-            
         last_index = len(mask) - 1 - np.argmax(mask[::-1])
         cut_index = min(last_index + fade_len, len(wav_np))
         trimmed_wav = wav_np[:cut_index]
-        
         if len(trimmed_wav) > fade_len:
             fade_curve = np.linspace(1.0, 0.0, fade_len)
             trimmed_wav[-fade_len:] *= fade_curve
-
         return torch.from_numpy(trimmed_wav)
 
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
@@ -178,11 +227,20 @@ class TTSEngine:
         
         cleaned_tensor = self._clean_and_trim_tensor(raw_wav_tensor)
         
-        wav_data = audio_processor.tensor_to_bytes(cleaned_tensor)
+        target_sr = params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE)
+        if self.native_sample_rate != target_sr:
+            resampler = torchaudio.transforms.Resample(orig_freq=self.native_sample_rate, new_freq=target_sr)
+            if cleaned_tensor.ndim == 1:
+                cleaned_tensor = cleaned_tensor.unsqueeze(0)
+            resampled_tensor = resampler(cleaned_tensor)
+        else:
+            resampled_tensor = cleaned_tensor
+
+        wav_data = audio_processor.tensor_to_bytes(resampled_tensor, sample_rate=target_sr)
         final_audio = audio_processor.process_audio(
             wav_data, 
             params.get("output_format", settings.DEFAULT_OUTPUT_FORMAT), 
-            params.get("sample_rate", settings.DEFAULT_SAMPLE_RATE)
+            target_sr
         )
         return final_audio
 
@@ -201,7 +259,7 @@ class TTSEngine:
                         )
                         wav_chunks.append(torch.tensor(out['wav']))
                     elif segment['type'] == 'break':
-                        wav_chunks.append(torch.zeros(int(24000 * segment['duration'])))
+                        wav_chunks.append(torch.zeros(int(self.native_sample_rate * segment['duration'])))
                 raw_wav_tensor = torch.cat(wav_chunks, dim=0) if wav_chunks else torch.tensor([])
             else:
                 out = self.model.inference(
@@ -214,42 +272,7 @@ class TTSEngine:
             if settings.DEVICE == "cuda": raw_wav_tensor = raw_wav_tensor.cpu()
             self.memory_manager.check_and_clear()
             return raw_wav_tensor
-
-    def synthesize_stream(self, params: dict, speaker_wavs=None):
-        conf = self._prepare_inference(params, speaker_wavs)
-        
-        with self._gpu_lock:
-            try:
-                with torch.inference_mode():
-                    chunks = self.model.inference_stream(
-                        conf['text'], conf['language'], conf['gpt_cond_latent'], conf['speaker_embedding'],
-                        temperature=conf['temperature'], repetition_penalty=conf['repetition_penalty'],
-                        top_k=conf['top_k'], top_p=conf['top_p'], speed=conf['speed'],
-                        enable_text_splitting=conf['split_sentences']
-                    )
-
-                    last_chunk_np = None
-                    for chunk in chunks:
-                        wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
-                        if np.max(np.abs(wav_chunk_float)) < 0.005: continue
-                        if last_chunk_np is not None:
-                            np.clip(last_chunk_np, -1.0, 1.0, out=last_chunk_np)
-                            yield (last_chunk_np * 32767).astype(np.int16).tobytes()
-                        last_chunk_np = wav_chunk_float
-                    
-                    if last_chunk_np is not None:
-                        logger.debug("🔪 Cleaning last stream chunk (Fade-Out)...")
-                        last_tensor = torch.from_numpy(last_chunk_np)
-                        cleaned_tensor = self._clean_and_trim_tensor(last_tensor, threshold=0.025, fade_len=2400)
-                        cleaned_np = cleaned_tensor.numpy()
-                        np.clip(cleaned_np, -1.0, 1.0, out=cleaned_np)
-                        yield (cleaned_np * 32767).astype(np.int16).tobytes()
-                    
-                    self.memory_manager.check_and_clear()
-            except Exception:
-                logger.error(f"Stream error", exc_info=True)
-                yield b""
-
+            
     def refresh_speakers(self, force=False):
         now = time.time()
         if not force and (now - self.last_cache_update < self.CACHE_TTL):

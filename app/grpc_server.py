@@ -1,109 +1,79 @@
 import logging
 import grpc
-import time
 import os
 from concurrent import futures
 import asyncio
 
-try:
-    from sentiric.tts.v1 import coqui_pb2
-    from sentiric.tts.v1 import coqui_pb2_grpc
-except ImportError:
-    logging.warning("Sentiric Contracts not found. gRPC server will not start correctly.")
-    coqui_pb2 = None
-    coqui_pb2_grpc = None
+# Kontratlar artık v1.16.0, bu yüzden yeni alanları içerecek.
+from sentiric.tts.v1 import coqui_pb2
+from sentiric.tts.v1 import coqui_pb2_grpc
 
 from app.core.engine import tts_engine
 from app.core.config import settings
 
 logger = logging.getLogger("GRPC-SERVER")
 
-class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer if coqui_pb2_grpc else object):
+class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
 
     def CoquiSynthesize(self, request, context):
-        if not coqui_pb2:
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, "Contracts not loaded")
+        # [MİMARİ KARAR]: Bu metot artık kullanılmıyor ve kaldırıldı.
+        logger.warning("Deprecated CoquiSynthesize RPC called. Client should migrate to streaming.")
+        context.abort(grpc.StatusCode.UNIMPLEMENTED, "Unary synthesis is deprecated, use streaming for low latency.")
 
-        start_time = time.perf_counter()
+    def CoquiSynthesizeStream(self, request, context):
+        # [GÖZLEMLENEBİLİRLİK]: Trace ID'yi al
+        trace_id = dict(context.invocation_metadata()).get('x-trace-id', 'grpc-unknown')
+        
+        log_extra = {'trace_id': trace_id}
+        logger.info(
+            f"gRPC Stream Request | Text: '{request.text[:30]}...' | Lang: {request.language_code} | SampleRate: {request.sample_rate}",
+            extra=log_extra
+        )
+        
         try:
             params = {
                 "text": request.text,
                 "language": request.language_code,
-                "speaker_idx": settings.DEFAULT_SPEAKER, 
+                "speaker_idx": settings.DEFAULT_SPEAKER,
                 "temperature": request.temperature or 0.75,
                 "speed": request.speed or 1.0,
                 "top_k": int(request.top_k) if request.top_k else 50,
                 "top_p": request.top_p or 0.85,
-                "repetition_penalty": request.repetition_penalty or 5.0,
-                "output_format": request.output_format or "wav"
+                "repetition_penalty": request.repetition_penalty or 2.0,
+                "output_format": "pcm",
+                "speaker_wav": request.speaker_wav if request.speaker_wav else None,
+                "sample_rate": int(request.sample_rate) if request.sample_rate > 0 else tts_engine.native_sample_rate
             }
 
-            audio_bytes = tts_engine.synthesize(params)
-
-            process_time = time.perf_counter() - start_time
-            char_count = len(request.text)
+            for chunk in tts_engine.synthesize_stream(params):
+                yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=chunk, is_final=False)
             
-            logger.info("grpc.request_handled", extra={
-                "method": "CoquiSynthesize",
-                "chars": char_count,
-                "latency": f"{process_time:.3f}s"
-            })
-
-            return coqui_pb2.CoquiSynthesizeResponse(
-                audio_content=audio_bytes
-            )
+            yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
+            logger.info("gRPC Stream finished successfully.", extra=log_extra)
 
         except Exception as e:
-            logger.error(f"gRPC Synthesize Error: {e}")
+            logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra=log_extra)
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
-    def CoquiSynthesizeStream(self, request, context):
-        if not coqui_pb2:
-            context.abort(grpc.StatusCode.UNIMPLEMENTED, "Contracts not loaded")
-
-        response = self.CoquiSynthesize(request, context)
-        yield coqui_pb2.CoquiSynthesizeStreamResponse(
-            audio_chunk=response.audio_content,
-            is_final=True
-        )
-
+# ... (load_tls_credentials ve serve_grpc fonksiyonları önceki versiyondaki gibi kalabilir) ...
 def load_tls_credentials():
     try:
-        with open(settings.TTS_COQUI_SERVICE_KEY_PATH, 'rb') as f:
-            private_key = f.read()
-        with open(settings.TTS_COQUI_SERVICE_CERT_PATH, 'rb') as f:
-            certificate_chain = f.read()
-        with open(settings.GRPC_TLS_CA_PATH, 'rb') as f:
-            root_ca = f.read()
-
-        server_credentials = grpc.ssl_server_credentials(
-            [(private_key, certificate_chain)],
-            root_certificates=root_ca,
-            require_client_auth=True
-        )
+        with open(settings.TTS_COQUI_SERVICE_KEY_PATH, 'rb') as f: private_key = f.read()
+        with open(settings.TTS_COQUI_SERVICE_CERT_PATH, 'rb') as f: certificate_chain = f.read()
+        with open(settings.GRPC_TLS_CA_PATH, 'rb') as f: root_ca = f.read()
+        server_credentials = grpc.ssl_server_credentials([(private_key, certificate_chain)], root_certificates=root_ca, require_client_auth=True)
         return server_credentials
     except Exception as e:
         logger.critical(f"🔥 Failed to load TLS certificates: {e}")
         raise e
 
 async def serve_grpc():
-    if not coqui_pb2_grpc:
-        logger.critical("❌ gRPC dependencies missing. Skipping gRPC server start.")
-        return
-
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=4))
     coqui_pb2_grpc.add_TtsCoquiServiceServicer_to_server(TtsCoquiServicer(), server)
-    
     listen_addr = f"[::]:{settings.GRPC_PORT}"
-    
-    # [FIX] Insecure Fallback Logic
-    # Sertifika yolları boşsa veya yoksa Insecure başlat
-    use_tls = (
-        settings.TTS_COQUI_SERVICE_KEY_PATH and os.path.exists(settings.TTS_COQUI_SERVICE_KEY_PATH) and
-        settings.TTS_COQUI_SERVICE_CERT_PATH and os.path.exists(settings.TTS_COQUI_SERVICE_CERT_PATH) and
-        settings.GRPC_TLS_CA_PATH and os.path.exists(settings.GRPC_TLS_CA_PATH)
-    )
-
+    use_tls = all(p and os.path.exists(p) for p in [
+        settings.TTS_COQUI_SERVICE_KEY_PATH, settings.TTS_COQUI_SERVICE_CERT_PATH, settings.GRPC_TLS_CA_PATH
+    ])
     if use_tls:
         try:
             tls_creds = load_tls_credentials()
@@ -113,12 +83,9 @@ async def serve_grpc():
             logger.error("Failed to initialize secure port, shutting down.")
             return
     else:
-        # INSECURE MODE
         logger.warning(f"⚠️ TLS paths missing or invalid. Starting gRPC Server (Coqui) on {listen_addr} (INSECURE)")
         server.add_insecure_port(listen_addr)
-
     await server.start()
-    
     try:
         await server.wait_for_termination()
     except asyncio.CancelledError:
