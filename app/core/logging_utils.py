@@ -63,4 +63,4 @@ def setup_logging():
     
     logging.getLogger("numba").setLevel(logging.WARNING)
     logger = logging.getLogger("INIT")
-    logger.info(f"Log system initialized in PRODUCTION (JSON) mode.")```
+    logger.info(f"Log system initialized in PRODUCTION (JSON) mode.")
