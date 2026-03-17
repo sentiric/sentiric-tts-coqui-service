@@ -1,3 +1,4 @@
+# Dosya: Dockerfile
 # 1️⃣ Base Image
 FROM nvidia/cuda:12.1.0-cudnn8-runtime-ubuntu22.04
 
@@ -23,7 +24,8 @@ RUN ln -s /usr/bin/python3.10 /usr/bin/python
 # 4️⃣ Virtual environment
 ENV VIRTUAL_ENV=/app/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
-RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10
+# [ARCH-COMPLIANCE] Ortamın 'pkg_resources' gibi temel paketleri varsayılan olarak içermesi için --seed eklendi.
+RUN uv venv $VIRTUAL_ENV --python /usr/bin/python3.10 --seed
 
 # 5️⃣ Dependencies
 RUN uv pip install --no-cache \

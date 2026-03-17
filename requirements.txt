@@ -34,7 +34,8 @@ python-json-logger>=2.0.7
 python-dotenv
 ffmpeg-python
 defusedxml>=0.7.1
-setuptools
+# [ARCH-COMPLIANCE] setuptools v70.0 itibariyle pkg_resources'ı kaldırdığı için eski ML kütüphanelerinin çökmesini engellemek adına <70.0.0 olarak kilitlendi.
+setuptools<70.0.0
 
 # FFmpeg kurulumunun doğru olduğundan emin olalım
 soundfile>=0.12.1
