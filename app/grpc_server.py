@@ -1,10 +1,10 @@
+# Dosya: app/grpc_server.py
 import logging
 import grpc
 import os
 from concurrent import futures
 import asyncio
 
-# Kontratlar artık v1.16.0, bu yüzden yeni alanları içerecek.
 from sentiric.tts.v1 import coqui_pb2
 from sentiric.tts.v1 import coqui_pb2_grpc
 
@@ -16,12 +16,10 @@ logger = logging.getLogger("GRPC-SERVER")
 class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
 
     def CoquiSynthesize(self, request, context):
-        # [MİMARİ KARAR]: Bu metot artık kullanılmıyor ve kaldırıldı.
         logger.warning("Deprecated CoquiSynthesize RPC called. Client should migrate to streaming.")
         context.abort(grpc.StatusCode.UNIMPLEMENTED, "Unary synthesis is deprecated, use streaming for low latency.")
 
     def CoquiSynthesizeStream(self, request, context):
-        # [GÖZLEMLENEBİLİRLİK]: Trace ID'yi al
         trace_id = dict(context.invocation_metadata()).get('x-trace-id', 'grpc-unknown')
         
         log_extra = {'trace_id': trace_id}
@@ -55,7 +53,6 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
             logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra=log_extra)
             context.abort(grpc.StatusCode.INTERNAL, str(e))
 
-# ... (load_tls_credentials ve serve_grpc fonksiyonları önceki versiyondaki gibi kalabilir) ...
 def load_tls_credentials():
     try:
         with open(settings.TTS_COQUI_SERVICE_KEY_PATH, 'rb') as f: private_key = f.read()
@@ -71,20 +68,26 @@ async def serve_grpc():
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=4))
     coqui_pb2_grpc.add_TtsCoquiServiceServicer_to_server(TtsCoquiServicer(), server)
     listen_addr = f"[::]:{settings.GRPC_PORT}"
+    
+    # [ARCH-COMPLIANCE] constraints.yaml'ın gerektirdiği şekilde gRPC mTLS ZORUNLU kılındı.
+    # Insecure port (Güvenli olmayan) fallback mekanizması mimari kural ihlali olduğu için kaldırıldı.
     use_tls = all(p and os.path.exists(p) for p in [
         settings.TTS_COQUI_SERVICE_KEY_PATH, settings.TTS_COQUI_SERVICE_CERT_PATH, settings.GRPC_TLS_CA_PATH
     ])
-    if use_tls:
-        try:
-            tls_creds = load_tls_credentials()
-            server.add_secure_port(listen_addr, tls_creds)
-            logger.info(f"🔒 gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)")
-        except Exception:
-            logger.error("Failed to initialize secure port, shutting down.")
-            return
-    else:
-        logger.warning(f"⚠️ TLS paths missing or invalid. Starting gRPC Server (Coqui) on {listen_addr} (INSECURE)")
-        server.add_insecure_port(listen_addr)
+    
+    if not use_tls:
+        logger.critical("🔥 ARCHITECTURE VIOLATION: TLS certificates are missing or invalid paths provided.")
+        logger.critical("mTLS is STRICTLY REQUIRED according to Sentiric constraints.yaml. Shutting down gRPC initialization.")
+        raise RuntimeError("gRPC Server cannot start without valid mTLS certificates.")
+        
+    try:
+        tls_creds = load_tls_credentials()
+        server.add_secure_port(listen_addr, tls_creds)
+        logger.info(f"🔒 gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)")
+    except Exception as e:
+        logger.error(f"Failed to initialize secure port, shutting down: {e}")
+        raise e
+
     await server.start()
     try:
         await server.wait_for_termination()
