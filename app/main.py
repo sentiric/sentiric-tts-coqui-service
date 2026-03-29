@@ -1,9 +1,9 @@
+# Dosya: app/main.py
 import torchaudio
 try:
     torchaudio.set_audio_backend("soundfile")
 except:
     pass
-
 
 import logging
 import shutil
@@ -18,7 +18,6 @@ from prometheus_fastapi_instrumentator import Instrumentator
 from prometheus_client import start_http_server
 
 # --- KRİTİK: Loglama Yapılandırması (En Başta) ---
-# Diğer modüller import edilmeden önce log formatını ayarlıyoruz.
 from app.core.config import settings
 from app.core.logging_utils import setup_logging
 setup_logging() 
@@ -34,49 +33,43 @@ UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
 
-for d in [UPLOAD_DIR, HISTORY_DIR, CACHE_DIR]:
+for d in[UPLOAD_DIR, HISTORY_DIR, CACHE_DIR]:
     os.makedirs(d, exist_ok=True)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Renkli ve yapılandırılmış başlangıç logları
-    logger.info(f"🚀 Starting [bold cyan]{settings.APP_NAME}[/bold cyan] v{settings.APP_VERSION}")
-    logger.info(f"🌍 Environment: [yellow]{settings.ENV}[/yellow] | Device: [green]{settings.DEVICE}[/green]")
+    # [ARCH-COMPLIANCE] Log Event etiketleri
+    logger.info(f"Starting {settings.APP_NAME} v{settings.APP_VERSION}", extra={"event": "SERVICE_START"})
+    logger.info(f"Environment: {settings.ENV} | Device: {settings.DEVICE}", extra={"event": "SERVICE_CONFIGURED"})
     
     if settings.API_KEY:
-        logger.info("🔒 SECURITY: Standalone API Key protection [bold green]ENABLED[/bold green].")
+        logger.info("SECURITY: Standalone API Key protection ENABLED.", extra={"event": "SECURITY_ENABLED"})
     else:
-        logger.warning("🔓 SECURITY: Running in Open/Gateway Mode (No internal auth).")
+        logger.warning("SECURITY: Running in Open/Gateway Mode (No internal auth).", extra={"event": "SECURITY_DISABLED"})
 
-    # 1. Metrik Sunucusunu Başlat (Harmonic Port Architecture: 14032)
     try:
         start_http_server(settings.METRICS_PORT)
-        logger.info(f"📊 Metrics Server exposed on port [bold blue]{settings.METRICS_PORT}[/bold blue]")
+        logger.info(f"Metrics Server exposed on port {settings.METRICS_PORT}", extra={"event": "METRICS_SERVER_READY"})
     except Exception as e:
-        logger.error(f"❌ Failed to start metrics server: {e}")
+        logger.error(f"Failed to start metrics server: {e}", extra={"event": "METRICS_SERVER_ERROR"})
 
-    # 2. Motoru Başlat
     try:
-        # Arka planda başlatma opsiyonu yerine bloklayıcı başlatma tercih edildi.
-        # Çünkü model olmadan servis "Ready" olmamalıdır.
-        logger.info("🧠 Initializing Neural Engine...")
+        logger.info("Initializing Neural Engine...", extra={"event": "MODEL_LOAD_START"})
         tts_engine.initialize()
     except Exception as e:
-        logger.critical(f"🔥 CRITICAL: Engine failed to initialize: {e}", exc_info=True)
-        # Hata durumunda container'ın crash etmesi daha sağlıklıdır (Restart policy devreye girer)
+        logger.critical(f"CRITICAL: Engine failed to initialize: {e}", exc_info=True, extra={"event": "MODEL_LOAD_FAIL"})
         raise e
 
-    # 3. gRPC Sunucusunu Başlat
     grpc_task = asyncio.create_task(serve_grpc())
     
     yield
     
-    logger.info("🛑 Shutting down...")
+    logger.info("Shutting down...", extra={"event": "SERVICE_SHUTDOWN"})
     grpc_task.cancel()
     
     if os.path.exists(UPLOAD_DIR):
         shutil.rmtree(UPLOAD_DIR)
-        logger.info("🧹 Uploads cleaned.")
+        logger.info("Uploads cleaned.", extra={"event": "CLEANUP_COMPLETE"})
 
 app = FastAPI(
     title=settings.APP_NAME,
@@ -86,11 +79,8 @@ app = FastAPI(
     redoc_url=None
 )
 
-# --- İZLEME (Instrumentation Only) ---
-# expose(app) KALDIRILDI. Metrikler artık ayrı bir HTTP sunucusu (start_http_server) ile sunuluyor.
 Instrumentator().instrument(app)
 
-# --- MIDDLEWARE ---
 app.add_middleware(RequestContextMiddleware)
 app.add_middleware(
     CORSMiddleware,
@@ -101,13 +91,9 @@ app.add_middleware(
     expose_headers=["X-VCA-Chars", "X-VCA-Time", "X-VCA-RTF", "X-Trace-ID"]
 )
 
-# --- ROUTING ---
 app.include_router(api_router)
-
-# --- STATİK DOSYALAR (UI) ---
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
 
-# --- GELİŞMİŞ HEALTH CHECK ---
 @app.get("/health")
 async def health_check(response: Response):
     if not tts_engine.model:
