@@ -111,7 +111,7 @@ class TTSEngine:
                 raise e
 
     def synthesize_stream(self, params: dict, speaker_wavs=None):
-        """[ARCH-COMPLIANCE] SUTS v4.0 Logging ve OOM Koruması eklendi."""
+        """[FIX] 'Broadcasting Error' matematiksel hatası dinamik sönümleme ile giderildi."""
         conf = self._prepare_inference(params, speaker_wavs)
         
         with self._gpu_lock:
@@ -133,27 +133,30 @@ class TTSEngine:
                     for chunk in chunks:
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
                         if np.max(np.abs(wav_chunk_float)) < 0.005: continue
+                        
                         if last_chunk_np is not None:
                             tensor_chunk = torch.from_numpy(last_chunk_np)
                             if resampler:
                                 if tensor_chunk.ndim == 1: tensor_chunk = tensor_chunk.unsqueeze(0)
                                 tensor_chunk = resampler(tensor_chunk)
                             
-                            np.clip(tensor_chunk.numpy(), -1.0, 1.0, out=last_chunk_np)
-                            yield (tensor_chunk.numpy() * 32767).astype(np.int16).tobytes()
+                            # Float32 -> Int16 dönüşümü
+                            final_chunk = (tensor_chunk.numpy().flatten() * 32767).astype(np.int16).tobytes()
+                            yield final_chunk
+                            
                         last_chunk_np = wav_chunk_float
                     
                     if last_chunk_np is not None:
+                        # Son parçada akıllı sönümleme (Fade-out)
                         last_tensor = torch.from_numpy(last_chunk_np)
-                        cleaned_tensor = self._clean_and_trim_tensor(last_tensor, threshold=0.025, fade_len=int(self.native_sample_rate * 0.1))
+                        cleaned_tensor = self._clean_and_trim_tensor(last_tensor)
                         
                         if resampler:
                             if cleaned_tensor.ndim == 1: cleaned_tensor = cleaned_tensor.unsqueeze(0)
                             cleaned_tensor = resampler(cleaned_tensor)
                         
-                        cleaned_np = cleaned_tensor.numpy()
-                        np.clip(cleaned_np, -1.0, 1.0, out=cleaned_np)
-                        yield (cleaned_np * 32767).astype(np.int16).tobytes()
+                        final_chunk = (cleaned_tensor.numpy().flatten() * 32767).astype(np.int16).tobytes()
+                        yield final_chunk
                     
                     self.memory_manager.check_and_clear()
 
@@ -166,6 +169,31 @@ class TTSEngine:
                 logger.error(f"TTS Stream processing failed: {e}", exc_info=True, extra={"event": "TTS_STREAM_ERROR"})
                 yield b""
 
+    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
+        """[FIX] Dinamik sönümleme (Dynamic Fade) ile shape uyuşmazlığı giderildi."""
+        if wav_tensor.numel() == 0: return wav_tensor
+        if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
+        
+        # Tensörü 1D NumPy dizisine çevir (Shape uyuşmazlığını önlemek için kritik)
+        wav_np = wav_tensor.numpy().flatten()
+        abs_wav = np.abs(wav_np)
+        mask = abs_wav > threshold
+        
+        if not np.any(mask): return wav_tensor 
+        
+        last_index = len(mask) - 1 - np.argmax(mask[::-1])
+        cut_index = min(last_index + fade_len, len(wav_np))
+        trimmed_wav = wav_np[:cut_index]
+        
+        # DİNAMİK FADE: Eğer elimizdeki veri fade_len'den kısaysa, fade_len'i küçült
+        actual_fade_len = min(fade_len, len(trimmed_wav))
+        if actual_fade_len > 10:
+            fade_curve = np.linspace(1.0, 0.0, actual_fade_len)
+            trimmed_wav[-actual_fade_len:] *= fade_curve
+            
+        return torch.from_numpy(trimmed_wav)
+
+    # --- Diğer yardımcı fonksiyonlar (Aynı kalıyor) ---
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         conf = self._prepare_inference(params, speaker_wavs)
         try:
@@ -247,21 +275,6 @@ class TTSEngine:
             "split_sentences": params.get("split_sentences", True),
         }
 
-    def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
-        if wav_tensor.numel() == 0: return wav_tensor
-        if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
-        wav_np = wav_tensor.numpy()
-        abs_wav = np.abs(wav_np)
-        mask = abs_wav > threshold
-        if not np.any(mask): return wav_tensor 
-        last_index = len(mask) - 1 - np.argmax(mask[::-1])
-        cut_index = min(last_index + fade_len, len(wav_np))
-        trimmed_wav = wav_np[:cut_index]
-        if len(trimmed_wav) > fade_len:
-            fade_curve = np.linspace(1.0, 0.0, fade_len)
-            trimmed_wav[-fade_len:] *= fade_curve
-        return torch.from_numpy(trimmed_wav)
-            
     def refresh_speakers(self, force=False):
         now = time.time()
         if not force and (now - self.last_cache_update < self.CACHE_TTL):
