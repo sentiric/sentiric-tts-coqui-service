@@ -1,3 +1,4 @@
+# Dosya: app/core/config.py
 import os
 from typing import List, Optional
 from pydantic_settings import BaseSettings
@@ -5,10 +6,10 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
-    # [ARCH-COMPLIANCE FIX]: Versiyon yükseltildi (gRPC Async Stream & Barge-in Fix)
-    APP_VERSION: str = "1.2.6"
+    # [ARCH-COMPLIANCE FIX]: Versiyon yükseltildi (Async gRPC Context.cancelled() düzeltmesi)
+    APP_VERSION: str = "1.2.7"
     ENV: str = os.getenv("ENV", "production")
-        
+    
     # --- NETWORK & SECURITY ---
     HOST: str = "0.0.0.0"
     HTTP_PORT: int = int(os.getenv("TTS_COQUI_SERVICE_HTTP_PORT", "14030"))
@@ -55,6 +56,7 @@ class Settings(BaseSettings):
     
     def __init__(self, **data):
         super().__init__(**data)
+        # KRİTİK DÜZELTME: Pydantic veriyi yükledikten SONRA temizlik yapıyoruz.
         if self.ENV:
             self.ENV = self.ENV.strip('"').strip("'").lower()
             

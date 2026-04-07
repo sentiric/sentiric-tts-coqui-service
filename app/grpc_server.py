@@ -42,6 +42,8 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
             extra={**log_extra, 'event': 'GRPC_STREAM_REQUEST'}
         )
         
+        abort_event = threading.Event()
+        
         try:
             params = {
                 "text": request.text,
@@ -57,9 +59,8 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
                 "sample_rate": int(request.sample_rate) if request.sample_rate > 0 else tts_engine.native_sample_rate
             }
 
-            # [ARCH-COMPLIANCE FIX] Asenkron I/O ve Senkron CUDA arasındaki köprü (Thread-Safe Queue)
+            # [ARCH-COMPLIANCE FIX] Asenkron I/O ve Senkron CUDA arasındaki köprü
             q = queue.Queue(maxsize=5)
-            abort_event = threading.Event()
             
             def producer():
                 try:
@@ -78,7 +79,9 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
             threading.Thread(target=producer, daemon=True).start()
 
             while True:
-                if not context.is_active():
+                # [ARCH-COMPLIANCE FIX]: Asenkron grpc.aio ServicerContext'te is_active() YOKTUR. 
+                # context.cancelled() kullanılmak ZORUNDADIR. (Zero-Latency Barge-in Fix)
+                if context.cancelled():
                     logger.warning("gRPC Client disconnected during stream (Barge-in/Interrupt).", extra={**log_extra, "event": "GRPC_CLIENT_DISCONNECT"})
                     abort_event.set()
                     break
@@ -95,17 +98,19 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
                 else:
                     yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=payload, is_final=False)
 
-            if context.is_active():
+            if not context.cancelled():
                 yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
                 logger.info("gRPC Stream finished successfully.", extra={**log_extra, 'event': 'GRPC_STREAM_COMPLETE'})
 
         except asyncio.CancelledError:
+            logger.warning("gRPC Stream cancelled by client context.", extra={**log_extra, 'event': 'GRPC_STREAM_CANCELLED'})
             abort_event.set()
             raise
         except Exception as e:
             abort_event.set()
             logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra={**log_extra, 'event': 'GRPC_STREAM_ERROR'})
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
+
 
 def load_tls_credentials():
     try:
