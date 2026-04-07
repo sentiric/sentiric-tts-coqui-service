@@ -11,7 +11,7 @@ import threading
 import gc
 import shutil
 import torchaudio
-from typing import Optional, Tuple, Dict, Any
+from typing import Optional, Tuple, Dict, Any, Callable
 
 from TTS.tts.configs.xtts_config import XttsConfig
 from TTS.tts.models.xtts import Xtts
@@ -110,8 +110,8 @@ class TTSEngine:
                 logger.critical(f"🔥 Model init failed: {e}", extra={"event": "MODEL_INIT_FAILED"})
                 raise e
 
-    def synthesize_stream(self, params: dict, speaker_wavs=None):
-        """[FIX] 'Broadcasting Error' matematiksel hatası dinamik sönümleme ile giderildi."""
+    def synthesize_stream(self, params: dict, speaker_wavs=None, is_aborted_cb: Callable[[], bool] = None):
+        """[ARCH-COMPLIANCE FIX] is_aborted_cb eklenerek Zero-Latency Barge-in GPU kilitlenmesi engellendi."""
         conf = self._prepare_inference(params, speaker_wavs)
         
         with self._gpu_lock:
@@ -131,6 +131,11 @@ class TTSEngine:
 
                     last_chunk_np = None
                     for chunk in chunks:
+                        # [KRİTİK]: İstemci koptuysa GPU'yu derhal serbest bırak!
+                        if is_aborted_cb and is_aborted_cb():
+                            logger.warning("Inference aborted by client disconnect (Barge-in). Releasing GPU lock.", extra={"event": "GPU_INFERENCE_ABORTED"})
+                            break
+
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
                         if np.max(np.abs(wav_chunk_float)) < 0.005: continue
                         
@@ -140,14 +145,13 @@ class TTSEngine:
                                 if tensor_chunk.ndim == 1: tensor_chunk = tensor_chunk.unsqueeze(0)
                                 tensor_chunk = resampler(tensor_chunk)
                             
-                            # Float32 -> Int16 dönüşümü
                             final_chunk = (tensor_chunk.numpy().flatten() * 32767).astype(np.int16).tobytes()
                             yield final_chunk
                             
                         last_chunk_np = wav_chunk_float
                     
-                    if last_chunk_np is not None:
-                        # Son parçada akıllı sönümleme (Fade-out)
+                    # Abort edilmemişse ve son chunk varsa Fade-out uygula
+                    if last_chunk_np is not None and not (is_aborted_cb and is_aborted_cb()):
                         last_tensor = torch.from_numpy(last_chunk_np)
                         cleaned_tensor = self._clean_and_trim_tensor(last_tensor)
                         
@@ -170,11 +174,9 @@ class TTSEngine:
                 yield b""
 
     def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
-        """[FIX] Dinamik sönümleme (Dynamic Fade) ile shape uyuşmazlığı giderildi."""
         if wav_tensor.numel() == 0: return wav_tensor
         if wav_tensor.device.type == "cuda": wav_tensor = wav_tensor.cpu()
         
-        # Tensörü 1D NumPy dizisine çevir (Shape uyuşmazlığını önlemek için kritik)
         wav_np = wav_tensor.numpy().flatten()
         abs_wav = np.abs(wav_np)
         mask = abs_wav > threshold
@@ -185,7 +187,6 @@ class TTSEngine:
         cut_index = min(last_index + fade_len, len(wav_np))
         trimmed_wav = wav_np[:cut_index]
         
-        # DİNAMİK FADE: Eğer elimizdeki veri fade_len'den kısaysa, fade_len'i küçült
         actual_fade_len = min(fade_len, len(trimmed_wav))
         if actual_fade_len > 10:
             fade_curve = np.linspace(1.0, 0.0, actual_fade_len)
@@ -193,7 +194,6 @@ class TTSEngine:
             
         return torch.from_numpy(trimmed_wav)
 
-    # --- Diğer yardımcı fonksiyonlar (Aynı kalıyor) ---
     def synthesize(self, params: dict, speaker_wavs=None) -> bytes:
         conf = self._prepare_inference(params, speaker_wavs)
         try:

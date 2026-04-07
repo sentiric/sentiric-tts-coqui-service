@@ -5,7 +5,7 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
-    APP_VERSION: str = "1.2.1"
+    APP_VERSION: str = "1.2.3"
     ENV: str = os.getenv("ENV", "production")
     
     # --- NETWORK & SECURITY ---

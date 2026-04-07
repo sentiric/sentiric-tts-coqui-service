@@ -31,7 +31,6 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
             'tenant_id': tenant_id
         }
 
-        # [ARCH-COMPLIANCE] Strict Tenant Isolation Check
         if not tenant_id or tenant_id == 'unknown':
             logger.error("Tenant ID is missing in gRPC metadata. Request rejected.", extra={**log_extra, 'event': 'MISSING_TENANT_ID'})
             context.abort(grpc.StatusCode.INVALID_ARGUMENT, "tenant_id is strictly required for isolation")
@@ -56,11 +55,14 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
                 "sample_rate": int(request.sample_rate) if request.sample_rate > 0 else tts_engine.native_sample_rate
             }
 
-            for chunk in tts_engine.synthesize_stream(params):
+            # [ARCH-COMPLIANCE FIX] context.is_active() ile iptal durumu Engine'e iletiliyor
+            for chunk in tts_engine.synthesize_stream(params, is_aborted_cb=lambda: not context.is_active()):
                 yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=chunk, is_final=False)
             
-            yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
-            logger.info("gRPC Stream finished successfully.", extra={**log_extra, 'event': 'GRPC_STREAM_COMPLETE'})
+            # Sadece client kopmadıysa Final flag gönder
+            if context.is_active():
+                yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
+                logger.info("gRPC Stream finished successfully.", extra={**log_extra, 'event': 'GRPC_STREAM_COMPLETE'})
 
         except Exception as e:
             logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra={**log_extra, 'event': 'GRPC_STREAM_ERROR'})
@@ -82,14 +84,12 @@ async def serve_grpc():
     coqui_pb2_grpc.add_TtsCoquiServiceServicer_to_server(TtsCoquiServicer(), server)
     listen_addr = f"[::]:{settings.GRPC_PORT}"
     
-    #[ARCH-COMPLIANCE] mTLS Zorunluluğu
     use_tls = all(p and os.path.exists(p) for p in[
         settings.TTS_COQUI_SERVICE_KEY_PATH, settings.TTS_COQUI_SERVICE_CERT_PATH, settings.GRPC_TLS_CA_PATH
     ])
     
     if not use_tls:
         logger.critical("ARCHITECTURE VIOLATION: TLS certificates are missing or invalid paths provided.", extra={"event": "TLS_CONFIG_MISSING"})
-        logger.critical("mTLS is STRICTLY REQUIRED according to Sentiric constraints.yaml. Shutting down gRPC initialization.", extra={"event": "TLS_CONFIG_MISSING"})
         raise RuntimeError("gRPC Server cannot start without valid mTLS certificates.")
         
     try:

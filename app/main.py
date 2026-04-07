@@ -71,6 +71,9 @@ async def lifespan(app: FastAPI):
         shutil.rmtree(UPLOAD_DIR)
         logger.info("Uploads cleaned.", extra={"event": "CLEANUP_COMPLETE"})
 
+    # [ARCH-COMPLIANCE FIX] Zorunlu sistem kapanış logu eklendi
+    logger.info("Service fully stopped.", extra={"event": "SERVICE_STOPPED"})
+
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,

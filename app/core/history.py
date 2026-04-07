@@ -4,8 +4,11 @@ import os
 import uuid
 import time
 import glob
+import logging
 from datetime import datetime
 from typing import List, Dict, Optional
+
+logger = logging.getLogger("HISTORY")
 
 class HistoryManager:
     def __init__(self, db_path: str = "/app/history/history.db"):
@@ -50,7 +53,6 @@ class HistoryManager:
                 VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (entry_id, filename, preview_text, speaker, mode, date_str, timestamp))
             
-            # Otomatik Temizlik: Son 50 kaydı tut
             conn.execute("""
                 DELETE FROM history WHERE id NOT IN (
                     SELECT id FROM history ORDER BY timestamp DESC LIMIT 50
@@ -62,7 +64,8 @@ class HistoryManager:
                 "speaker": speaker, "mode": mode, "date": date_str, "timestamp": timestamp
             }
         except Exception as e:
-            print(f"DB Error: {e}")
+            # [ARCH-COMPLIANCE FIX] SUTS JSON Log formatına geçirildi
+            logger.error(f"DB Error: {e}", extra={"event": "HISTORY_DB_ERROR"})
             return None
         finally:
             conn.close()
@@ -77,7 +80,6 @@ class HistoryManager:
             conn.close()
             
     def delete_entry(self, filename: str):
-        """Tekil bir kaydı DB'den siler"""
         conn = self._get_conn()
         try:
             conn.execute("DELETE FROM history WHERE filename = ?", (filename,))
@@ -86,7 +88,6 @@ class HistoryManager:
             conn.close()
 
     def clear_all(self):
-        """Tüm tabloyu temizler"""
         conn = self._get_conn()
         try:
             conn.execute("DELETE FROM history")

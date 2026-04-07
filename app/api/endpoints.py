@@ -1,4 +1,3 @@
-# Dosya: app/api/endpoints.py
 import os
 import shutil
 import glob
@@ -23,11 +22,9 @@ from app.api.schemas import TTSRequest, OpenAISpeechRequest
 from app.core.history import history_manager
 from app.core.audio import audio_processor
 
-# Loglama yapılandırması
 logger = logging.getLogger("API")
 router = APIRouter()
 
-# Dizin tanımları
 UPLOAD_DIR = "/app/uploads"
 HISTORY_DIR = "/app/history"
 CACHE_DIR = "/app/cache"
@@ -43,15 +40,13 @@ LANGUAGE_NAMES = {
     "zh-cn": "Chinese", "ja": "Japanese", "hu": "Hungarian", "ko": "Korean"
 }
 
-# --- YARDIMCI FONKSİYONLAR ---
-
 async def cleanup_files(file_paths: List[str]):
     for path in file_paths:
         try:
             if os.path.exists(path):
                 await asyncio.to_thread(os.remove, path)
         except Exception as e:
-            logger.warning(f"Failed to cleanup {path}: {e}")
+            logger.warning(f"Failed to cleanup {path}: {e}", extra={"event": "CLEANUP_FAIL"})
 
 def calculate_vca_metrics(start_time, char_count, audio_bytes, sample_rate=24000):
     process_time = time.perf_counter() - start_time
@@ -96,8 +91,6 @@ async def _get_voices_list():
                         voices_list.append({"id": variant_id, "name": variant_id, "object": "voice"})
     return voices_list
 
-# --- SYSTEM ENDPOINTS ---
-
 @router.get("/favicon.ico", include_in_schema=False)
 async def favicon():
     return Response(content=b"", media_type="image/x-icon")
@@ -131,8 +124,6 @@ async def get_public_config():
         },
         "system": {"streaming_enabled": settings.ENABLE_STREAMING, "device": settings.DEVICE}
     }
-
-# --- OPENAI COMPATIBLE ENDPOINTS ---
 
 @router.get("/v1/models")
 async def list_models():
@@ -190,8 +181,6 @@ async def openai_speech_endpoint(request: OpenAISpeechRequest):
         logger.error(f"TTS Generation Failed: {e}", exc_info=True, extra={"event": "TTS_GEN_FAIL"})
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- INTERNAL API ENDPOINTS ---
-
 @router.get("/api/speakers")
 async def get_speakers():
     return {"speakers": tts_engine.get_speakers()}
@@ -208,7 +197,6 @@ async def get_history():
 async def get_history_audio(filename: str):
     file_path = os.path.join(HISTORY_DIR, os.path.basename(filename))
     if os.path.exists(file_path):
-        # [CRITICAL FIX] Tarayıcılar ham PCM çalamaz. Eğer uzantı PCM ise anında WAV Header sar.
         if filename.endswith(".pcm"):
             try:
                 pcm_bytes = await asyncio.to_thread(open, file_path, "rb")
@@ -237,7 +225,8 @@ async def delete_history_entry(filename: str):
     return {"status": "deleted"}
 
 @router.post("/api/tts")
-async def generate_speech(request: TTSRequest):
+async def generate_speech(request: TTSRequest, http_req: Request):
+    """[ARCH-COMPLIANCE FIX] http_req eklendi, İstemci kopmaları (is_disconnected) anında GPU serbest bırakılır."""
     if not request.text or not request.text.strip():
         raise HTTPException(status_code=422)
     
@@ -248,14 +237,20 @@ async def generate_speech(request: TTSRequest):
         logger.info("Stream request: Bypassing cache.", extra={"event": "STREAM_REQUEST_INIT"})
         
         async def stream_and_save():
-            # [CRITICAL FIX] Senkron modeli izole etmek için Thread ve Queue kullanıldı (Event Loop Starvation önlendi).
-            q = queue.Queue()
+            q = queue.Queue(maxsize=5) # Queue sınırı OOM'i önler
+            abort_event = threading.Event()
             
             def producer():
                 try:
-                    for chunk in tts_engine.synthesize_stream(params):
-                        q.put(("chunk", chunk))
-                    q.put(("done", None))
+                    for chunk in tts_engine.synthesize_stream(params, is_aborted_cb=abort_event.is_set):
+                        while not abort_event.is_set():
+                            try:
+                                q.put(("chunk", chunk), timeout=0.1)
+                                break
+                            except queue.Full:
+                                continue
+                    if not abort_event.is_set():
+                        q.put(("done", None))
                 except Exception as ex:
                     q.put(("error", ex))
 
@@ -267,8 +262,15 @@ async def generate_speech(request: TTSRequest):
 
             try:
                 while True:
-                    # Async context'i bloklamadan queue'dan veri al
-                    msg_type, payload = await asyncio.to_thread(q.get)
+                    if await http_req.is_disconnected():
+                        logger.warning("HTTP Client disconnected during stream.", extra={"event": "HTTP_CLIENT_DISCONNECT"})
+                        abort_event.set()
+                        break
+                    try:
+                        msg_type, payload = await asyncio.to_thread(q.get, True, 0.1)
+                    except queue.Empty:
+                        continue
+                        
                     if msg_type == "error":
                         logger.error(f"Stream error in thread: {payload}", extra={"event": "STREAM_THREAD_ERROR"})
                         break
@@ -278,8 +280,11 @@ async def generate_speech(request: TTSRequest):
                         chunk = payload
                         accumulated_bytes.extend(chunk)
                         yield chunk
+            except asyncio.CancelledError:
+                abort_event.set()
+                raise
             finally:
-                if accumulated_bytes:
+                if accumulated_bytes and not abort_event.is_set():
                     wav_bytes = audio_processor.raw_pcm_to_wav(bytes(accumulated_bytes), request.sample_rate)
                     await asyncio.to_thread(lambda: open(filepath, "wb").write(wav_bytes))
                     history_manager.add_entry(safe_filename, request.text, request.speaker_idx, "Stream")
@@ -304,7 +309,7 @@ async def generate_speech(request: TTSRequest):
 
 @router.post("/api/tts/clone")
 async def generate_speech_clone(
-    text: str = Form(...), language: str = Form(settings.DEFAULT_LANGUAGE), files: List[UploadFile] = File(...),
+    http_req: Request, text: str = Form(...), language: str = Form(settings.DEFAULT_LANGUAGE), files: List[UploadFile] = File(...),
     stream: bool = Form(False), output_format: str = Form(settings.DEFAULT_OUTPUT_FORMAT)
 ):
     saved_files = []
@@ -317,12 +322,19 @@ async def generate_speech_clone(
         
         if stream:
             async def stream_with_cleanup():
-                q = queue.Queue()
+                q = queue.Queue(maxsize=5)
+                abort_event = threading.Event()
                 def producer():
                     try:
-                        for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files):
-                            q.put(("chunk", chunk))
-                        q.put(("done", None))
+                        for chunk in tts_engine.synthesize_stream(params, speaker_wavs=saved_files, is_aborted_cb=abort_event.is_set):
+                            while not abort_event.is_set():
+                                try:
+                                    q.put(("chunk", chunk), timeout=0.1)
+                                    break
+                                except queue.Full:
+                                    continue
+                        if not abort_event.is_set():
+                            q.put(("done", None))
                     except Exception as ex:
                         q.put(("error", ex))
 
@@ -330,10 +342,19 @@ async def generate_speech_clone(
 
                 try:
                     while True:
-                        msg_type, payload = await asyncio.to_thread(q.get)
+                        if await http_req.is_disconnected():
+                            abort_event.set()
+                            break
+                        try:
+                            msg_type, payload = await asyncio.to_thread(q.get, True, 0.1)
+                        except queue.Empty:
+                            continue
                         if msg_type == "error": break
                         elif msg_type == "done": break
                         else: yield payload
+                except asyncio.CancelledError:
+                    abort_event.set()
+                    raise
                 finally: 
                     await cleanup_files(saved_files)
                     
