@@ -21,8 +21,9 @@ pydantic>=2.6.0
 pydantic-settings>=2.0.0
 
 # --- gRPC & Contracts ---
+protobuf>=7.34.0,<8.0.0
 grpcio>=1.62.0
-grpcio-tools>=1.62.0
+# grpcio-tools kaldır (şimdilik)
 # [ARCH-COMPLIANCE FIX]: v1.20.6 (Zero-Latency & Deep Waters Contract) versiyonuna güncellendi
 sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.20.6
 
