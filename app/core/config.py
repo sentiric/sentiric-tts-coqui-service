@@ -6,7 +6,7 @@ class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
     # [ARCH-COMPLIANCE FIX]: Versiyon yükseltildi (Buffer & Silence Fix)
-    APP_VERSION: str = "1.2.4"
+    APP_VERSION: str = "1.2.5"
     ENV: str = os.getenv("ENV", "production")
     
     # --- NETWORK & SECURITY ---

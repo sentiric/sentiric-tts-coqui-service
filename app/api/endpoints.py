@@ -273,7 +273,8 @@ async def generate_speech(request: TTSRequest, http_req: Request):
                         
                     if msg_type == "error":
                         logger.error(f"Stream error in thread: {payload}", extra={"event": "STREAM_THREAD_ERROR"})
-                        break
+                        # [ARCH-COMPLIANCE FIX]: Hata HTTP Client'a fırlatılarak bağlantı koparılır
+                        raise payload
                     elif msg_type == "done":
                         break
                     else:

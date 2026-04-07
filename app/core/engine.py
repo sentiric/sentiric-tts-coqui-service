@@ -131,15 +131,11 @@ class TTSEngine:
 
                     last_chunk_np = None
                     for chunk in chunks:
-                        # [KRİTİK]: İstemci koptuysa GPU'yu derhal serbest bırak!
                         if is_aborted_cb and is_aborted_cb():
                             logger.warning("Inference aborted by client disconnect (Barge-in). Releasing GPU lock.", extra={"event": "GPU_INFERENCE_ABORTED"})
                             break
 
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
-                        
-                        # [ARCH-COMPLIANCE FIX]: Sessiz chunk'ları (es/nefes) DROP ETMEK YASAKTIR.
-                        # Hatalı optimizasyon kodu silindi. Bu sayede doğal SSML break ve noktalama duraklamaları korunur.
                         
                         if last_chunk_np is not None:
                             tensor_chunk = torch.from_numpy(last_chunk_np)
@@ -152,7 +148,6 @@ class TTSEngine:
                             
                         last_chunk_np = wav_chunk_float
                     
-                    # Abort edilmemişse ve son chunk varsa Fade-out uygula
                     if last_chunk_np is not None and not (is_aborted_cb and is_aborted_cb()):
                         last_tensor = torch.from_numpy(last_chunk_np)
                         cleaned_tensor = self._clean_and_trim_tensor(last_tensor)
@@ -170,10 +165,13 @@ class TTSEngine:
                 if "CUDA out of memory" in str(e):
                     logger.error("🚨 TTS Stream OOM! Cleaning cache...", extra={"event": "VRAM_OOM_STREAM"})
                     self.memory_manager._force_clean("OOM Stream Recovery")
-                yield b""
+                # [ARCH-COMPLIANCE FIX]: OOM durumunda sessizce ölmek yerine exception fırlatılır ki gRPC abort etsin.
+                raise e
             except Exception as e:
                 logger.error(f"TTS Stream processing failed: {e}", exc_info=True, extra={"event": "TTS_STREAM_ERROR"})
-                yield b""
+                # [ARCH-COMPLIANCE FIX]: Silent Stream Death engellendi! Exception re-raise edilerek 
+                # gRPC client'ına (Gateway) hata sinyali ulaştırılır.
+                raise e
 
     def _clean_and_trim_tensor(self, wav_tensor: torch.Tensor, threshold: float = 0.025, fade_len: int = 2400) -> torch.Tensor:
         if wav_tensor.numel() == 0: return wav_tensor

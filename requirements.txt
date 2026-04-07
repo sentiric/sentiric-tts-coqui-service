@@ -13,8 +13,9 @@ cutlet
 unidic-lite
 
 # --- API & Server ---
-fastapi>=0.109.0
-uvicorn[standard]>=0.27.0
+# [ARCH-COMPLIANCE FIX]: FastAPI ve Uvicorn versiyonları Contracts SOP uyarınca kilitlendi
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
 python-multipart>=0.0.9
 pydantic>=2.6.0
 pydantic-settings>=2.0.0
@@ -22,11 +23,12 @@ pydantic-settings>=2.0.0
 # --- gRPC & Contracts ---
 grpcio>=1.62.0
 grpcio-tools>=1.62.0
-# [MİMARİ GÜNCELLEME]: v1.16.0'a geçiş yapılıyor.
-sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.16.0
+# [ARCH-COMPLIANCE FIX]: v1.20.6 (Zero-Latency & Deep Waters Contract) versiyonuna güncellendi
+sentiric-contracts-py @ git+https://github.com/sentiric/sentiric-contracts.git@v1.20.6
 
 # --- Monitoring & Logging ---
-prometheus-fastapi-instrumentator>=6.1.0
+# [ARCH-COMPLIANCE FIX]: Instrumentator çakışması giderildi
+prometheus-fastapi-instrumentator==6.0.0
 prometheus-client>=0.19.0
 python-json-logger>=2.0.7
 
@@ -34,8 +36,5 @@ python-json-logger>=2.0.7
 python-dotenv
 ffmpeg-python
 defusedxml>=0.7.1
-# [ARCH-COMPLIANCE] setuptools v70.0 itibariyle pkg_resources'ı kaldırdığı için eski ML kütüphanelerinin çökmesini engellemek adına <70.0.0 olarak kilitlendi.
 setuptools<70.0.0
-
-# FFmpeg kurulumunun doğru olduğundan emin olalım
 soundfile>=0.12.1
