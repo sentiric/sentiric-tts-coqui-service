@@ -1,5 +1,5 @@
 /**
- * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.8 (Async Logic Fix)
+ * SENTIRIC XTTS PRO - MAIN CONTROLLER v2.9 (Buffer Safing & Sync Fix)
  */
 
 const State = {
@@ -133,7 +133,7 @@ const Controllers = {
         UI.setPlayingState(true);
         if (window.resetAudioState) window.resetAudioState();
         
-        let isActuallyStreaming = false; // Scope'u genişlet
+        let isActuallyStreaming = false;
 
         try {
             State.abortController = new AbortController();
@@ -177,11 +177,19 @@ const Controllers = {
                          combined.set(leftover);
                          combined.set(value, leftover.length);
                          const remainder = combined.length % 2;
-                         const processData = combined.subarray(0, combined.length - remainder);
-                         leftover = combined.subarray(combined.length - remainder);
+                         
+                         // [CRITICAL FIX] Buffer izolasyonu için slice kullanıldı (RangeError Önlemi)
+                         const processData = combined.slice(0, combined.length - remainder);
+                         leftover = combined.slice(combined.length - remainder);
+                         
+                         // Yeni yaratılan processData.buffer zaten tam olarak çift sayıdır.
                          const int16Data = new Int16Array(processData.buffer);
                          const float32Data = new Float32Array(int16Data.length);
-                         for (let i = 0; i < int16Data.length; i++) float32Data[i] = int16Data[i] / 32768.0;
+                         
+                         for (let i = 0; i < int16Data.length; i++) {
+                             float32Data[i] = int16Data[i] / 32768.0;
+                         }
+                         
                          if (window.playChunk) await window.playChunk(float32Data, params.sample_rate);
                      }
                  }
@@ -206,23 +214,13 @@ const Controllers = {
             if (err.name !== 'AbortError') {
                 console.error(err);
                 UI.showToast(err.message, "error");
-                this.stopPlayback(false); // Sadece hata durumunda durdur
+                this.stopPlayback(false);
             }
         } finally {
-            // *** KRİTİK DÜZELTME ***
-            // `stopPlayback` çağrısı buradan kaldırıldı. Stream'in bitmesini beklemeden
-            // ses motorunu resetliyordu, bu da periyodik takılmalara neden oluyordu.
-            // Durdurma işlemi artık sadece `onAudioPlaybackComplete` callback'i,
-            // kullanıcı müdahalesi veya bir hata ile tetiklenir.
-            if (!isActuallyStreaming) {
-                // Eğer stream değilse, `onended` olayı zaten `stopPlayback`'i çağırır.
-                // Ama play() hatası verirse diye burada bir fallback olabilir,
-                // şimdilik temiz tutalım. `stopPlayback` hata catch bloğunda var.
-            }
+            // isActuallyStreaming değilse oynatmanın bitmesi beklenir.
         }
     }
 };
-
 
 window.Controllers = Controllers;
 window.handleGenerate = () => Controllers.handleGenerate();
