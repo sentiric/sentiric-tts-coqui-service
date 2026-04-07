@@ -168,7 +168,10 @@ const Controllers = {
                  let leftover = new Uint8Array(0);
                  
                  while (true) {
-                     if (isStopRequested) { console.log("Stream reading aborted."); break; }
+                     if (typeof isStopRequested !== 'undefined' && isStopRequested) { 
+                         console.log("Stream reading aborted."); break; 
+                     }
+                     
                      const { done, value } = await reader.read();
                      if (done) break;
                      
@@ -176,13 +179,20 @@ const Controllers = {
                          const combined = new Uint8Array(leftover.length + value.length);
                          combined.set(leftover);
                          combined.set(value, leftover.length);
+                         
                          const remainder = combined.length % 2;
+                         const processLen = combined.length - remainder;
                          
-                         // [CRITICAL FIX] Buffer izolasyonu için slice kullanıldı (RangeError Önlemi)
-                         const processData = combined.slice(0, combined.length - remainder);
-                         leftover = combined.slice(combined.length - remainder);
+                         // [ARCH-COMPLIANCE FIX]: JS Motorunun array slice sırasında alttaki buffer'ı (ArrayBuffer)
+                         // referans olarak paylaşmasını engellemek için, bellekte yepyeni, bağımsız ve 
+                         // kesinlikle çift uzunlukta (even) bir Uint8Array yaratıyoruz.
+                         const processData = new Uint8Array(processLen);
+                         processData.set(combined.subarray(0, processLen));
                          
-                         // Yeni yaratılan processData.buffer zaten tam olarak çift sayıdır.
+                         leftover = new Uint8Array(remainder);
+                         leftover.set(combined.subarray(processLen));
+                         
+                         // Yeni array'in buffer boyutu tam olarak processLen olduğundan RangeError vermez.
                          const int16Data = new Int16Array(processData.buffer);
                          const float32Data = new Float32Array(int16Data.length);
                          
@@ -216,8 +226,6 @@ const Controllers = {
                 UI.showToast(err.message, "error");
                 this.stopPlayback(false);
             }
-        } finally {
-            // isActuallyStreaming değilse oynatmanın bitmesi beklenir.
         }
     }
 };

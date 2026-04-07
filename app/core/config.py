@@ -5,7 +5,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
-    APP_VERSION: str = "1.2.3"
+    # [ARCH-COMPLIANCE FIX]: Versiyon yükseltildi (Buffer & Silence Fix)
+    APP_VERSION: str = "1.2.4"
     ENV: str = os.getenv("ENV", "production")
     
     # --- NETWORK & SECURITY ---
@@ -55,7 +56,6 @@ class Settings(BaseSettings):
     def __init__(self, **data):
         super().__init__(**data)
         # KRİTİK DÜZELTME: Pydantic veriyi yükledikten SONRA temizlik yapıyoruz.
-        # Docker bazen ENV değişkenlerini tırnaklarıyla birlikte gönderir ('"development"').
         if self.ENV:
             self.ENV = self.ENV.strip('"').strip("'").lower()
             

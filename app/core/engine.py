@@ -137,7 +137,9 @@ class TTSEngine:
                             break
 
                         wav_chunk_float = chunk.cpu().numpy() if settings.DEVICE == "cuda" else chunk.numpy()
-                        if np.max(np.abs(wav_chunk_float)) < 0.005: continue
+                        
+                        # [ARCH-COMPLIANCE FIX]: Sessiz chunk'ları (es/nefes) DROP ETMEK YASAKTIR.
+                        # Hatalı optimizasyon kodu silindi. Bu sayede doğal SSML break ve noktalama duraklamaları korunur.
                         
                         if last_chunk_np is not None:
                             tensor_chunk = torch.from_numpy(last_chunk_np)
