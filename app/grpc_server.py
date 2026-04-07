@@ -4,6 +4,8 @@ import grpc
 import os
 from concurrent import futures
 import asyncio
+import queue
+import threading
 
 from sentiric.tts.v1 import coqui_pb2
 from sentiric.tts.v1 import coqui_pb2_grpc
@@ -15,11 +17,11 @@ logger = logging.getLogger("GRPC-SERVER")
 
 class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
 
-    def CoquiSynthesize(self, request, context):
+    async def CoquiSynthesize(self, request, context):
         logger.warning("Deprecated CoquiSynthesize RPC called. Client should migrate to streaming.", extra={"event": "DEPRECATED_RPC_CALL"})
-        context.abort(grpc.StatusCode.UNIMPLEMENTED, "Unary synthesis is deprecated, use streaming for low latency.")
+        await context.abort(grpc.StatusCode.UNIMPLEMENTED, "Unary synthesis is deprecated, use streaming for low latency.")
 
-    def CoquiSynthesizeStream(self, request, context):
+    async def CoquiSynthesizeStream(self, request, context):
         metadata = dict(context.invocation_metadata())
         trace_id = metadata.get('x-trace-id', 'unknown')
         span_id = metadata.get('x-span-id')
@@ -33,7 +35,7 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
 
         if not tenant_id or tenant_id == 'unknown':
             logger.error("Tenant ID is missing in gRPC metadata. Request rejected.", extra={**log_extra, 'event': 'MISSING_TENANT_ID'})
-            context.abort(grpc.StatusCode.INVALID_ARGUMENT, "tenant_id is strictly required for isolation")
+            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "tenant_id is strictly required for isolation")
         
         logger.info(
             f"gRPC Stream Request | Text: '{request.text[:30]}...' | Lang: {request.language_code} | SampleRate: {request.sample_rate}",
@@ -55,18 +57,55 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
                 "sample_rate": int(request.sample_rate) if request.sample_rate > 0 else tts_engine.native_sample_rate
             }
 
-            # [ARCH-COMPLIANCE FIX] context.is_active() ile iptal durumu Engine'e iletiliyor
-            for chunk in tts_engine.synthesize_stream(params, is_aborted_cb=lambda: not context.is_active()):
-                yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=chunk, is_final=False)
+            # [ARCH-COMPLIANCE FIX] Asenkron I/O ve Senkron CUDA arasındaki köprü (Thread-Safe Queue)
+            q = queue.Queue(maxsize=5)
+            abort_event = threading.Event()
             
-            # Sadece client kopmadıysa Final flag gönder
+            def producer():
+                try:
+                    for chunk in tts_engine.synthesize_stream(params, is_aborted_cb=abort_event.is_set):
+                        while not abort_event.is_set():
+                            try:
+                                q.put(("chunk", chunk), timeout=0.1)
+                                break
+                            except queue.Full:
+                                continue
+                    if not abort_event.is_set():
+                        q.put(("done", None))
+                except Exception as ex:
+                    q.put(("error", ex))
+
+            threading.Thread(target=producer, daemon=True).start()
+
+            while True:
+                if not context.is_active():
+                    logger.warning("gRPC Client disconnected during stream (Barge-in/Interrupt).", extra={**log_extra, "event": "GRPC_CLIENT_DISCONNECT"})
+                    abort_event.set()
+                    break
+                    
+                try:
+                    msg_type, payload = await asyncio.to_thread(q.get, True, 0.1)
+                except queue.Empty:
+                    continue
+                    
+                if msg_type == "error":
+                    raise payload
+                elif msg_type == "done":
+                    break
+                else:
+                    yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=payload, is_final=False)
+
             if context.is_active():
                 yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
                 logger.info("gRPC Stream finished successfully.", extra={**log_extra, 'event': 'GRPC_STREAM_COMPLETE'})
 
+        except asyncio.CancelledError:
+            abort_event.set()
+            raise
         except Exception as e:
+            abort_event.set()
             logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra={**log_extra, 'event': 'GRPC_STREAM_ERROR'})
-            context.abort(grpc.StatusCode.INTERNAL, str(e))
+            await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
 def load_tls_credentials():
     try:
