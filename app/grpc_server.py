@@ -15,35 +15,43 @@ from app.core.config import settings
 
 logger = logging.getLogger("GRPC-SERVER")
 
-class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
 
+class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
     async def CoquiSynthesize(self, request, context):
-        logger.warning("Deprecated CoquiSynthesize RPC called. Client should migrate to streaming.", extra={"event": "DEPRECATED_RPC_CALL"})
-        await context.abort(grpc.StatusCode.UNIMPLEMENTED, "Unary synthesis is deprecated, use streaming for low latency.")
+        logger.warning(
+            "Deprecated CoquiSynthesize RPC called. Client should migrate to streaming.",
+            extra={"event": "DEPRECATED_RPC_CALL"},
+        )
+        await context.abort(
+            grpc.StatusCode.UNIMPLEMENTED,
+            "Unary synthesis is deprecated, use streaming for low latency.",
+        )
 
     async def CoquiSynthesizeStream(self, request, context):
         metadata = dict(context.invocation_metadata())
-        trace_id = metadata.get('x-trace-id', 'unknown')
-        span_id = metadata.get('x-span-id')
-        tenant_id = metadata.get('x-tenant-id')
-        
-        log_extra = {
-            'trace_id': trace_id,
-            'span_id': span_id,
-            'tenant_id': tenant_id
-        }
+        trace_id = metadata.get("x-trace-id", "unknown")
+        span_id = metadata.get("x-span-id")
+        tenant_id = metadata.get("x-tenant-id")
 
-        if not tenant_id or tenant_id == 'unknown':
-            logger.error("Tenant ID is missing in gRPC metadata. Request rejected.", extra={**log_extra, 'event': 'MISSING_TENANT_ID'})
-            await context.abort(grpc.StatusCode.INVALID_ARGUMENT, "tenant_id is strictly required for isolation")
-        
+        log_extra = {"trace_id": trace_id, "span_id": span_id, "tenant_id": tenant_id}
+
+        if not tenant_id or tenant_id == "unknown":
+            logger.error(
+                "Tenant ID is missing in gRPC metadata. Request rejected.",
+                extra={**log_extra, "event": "MISSING_TENANT_ID"},
+            )
+            await context.abort(
+                grpc.StatusCode.INVALID_ARGUMENT,
+                "tenant_id is strictly required for isolation",
+            )
+
         logger.info(
             f"gRPC Stream Request | Text: '{request.text[:30]}...' | Lang: {request.language_code} | SampleRate: {request.sample_rate}",
-            extra={**log_extra, 'event': 'GRPC_STREAM_REQUEST'}
+            extra={**log_extra, "event": "GRPC_STREAM_REQUEST"},
         )
-        
+
         abort_event = threading.Event()
-        
+
         try:
             params = {
                 "text": request.text,
@@ -56,15 +64,19 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
                 "repetition_penalty": request.repetition_penalty or 2.0,
                 "output_format": "pcm",
                 "speaker_wav": request.speaker_wav if request.speaker_wav else None,
-                "sample_rate": int(request.sample_rate) if request.sample_rate > 0 else tts_engine.native_sample_rate
+                "sample_rate": int(request.sample_rate)
+                if request.sample_rate > 0
+                else tts_engine.native_sample_rate,
             }
 
             # [ARCH-COMPLIANCE FIX] Asenkron I/O ve Senkron CUDA arasındaki köprü
             q = queue.Queue(maxsize=5)
-            
+
             def producer():
                 try:
-                    for chunk in tts_engine.synthesize_stream(params, is_aborted_cb=abort_event.is_set):
+                    for chunk in tts_engine.synthesize_stream(
+                        params, is_aborted_cb=abort_event.is_set
+                    ):
                         while not abort_event.is_set():
                             try:
                                 q.put(("chunk", chunk), timeout=0.1)
@@ -79,69 +91,109 @@ class TtsCoquiServicer(coqui_pb2_grpc.TtsCoquiServiceServicer):
             threading.Thread(target=producer, daemon=True).start()
 
             while True:
-                # [ARCH-COMPLIANCE FIX]: Asenkron grpc.aio ServicerContext'te is_active() YOKTUR. 
+                # [ARCH-COMPLIANCE FIX]: Asenkron grpc.aio ServicerContext'te is_active() YOKTUR.
                 # context.cancelled() kullanılmak ZORUNDADIR. (Zero-Latency Barge-in Fix)
                 if context.cancelled():
-                    logger.warning("gRPC Client disconnected during stream (Barge-in/Interrupt).", extra={**log_extra, "event": "GRPC_CLIENT_DISCONNECT"})
+                    logger.warning(
+                        "gRPC Client disconnected during stream (Barge-in/Interrupt).",
+                        extra={**log_extra, "event": "GRPC_CLIENT_DISCONNECT"},
+                    )
                     abort_event.set()
                     break
-                    
+
                 try:
                     msg_type, payload = await asyncio.to_thread(q.get, True, 0.1)
                 except queue.Empty:
                     continue
-                    
+
                 if msg_type == "error":
                     raise payload
                 elif msg_type == "done":
                     break
                 else:
-                    yield coqui_pb2.CoquiSynthesizeStreamResponse(audio_chunk=payload, is_final=False)
+                    yield coqui_pb2.CoquiSynthesizeStreamResponse(
+                        audio_chunk=payload, is_final=False
+                    )
 
             if not context.cancelled():
                 yield coqui_pb2.CoquiSynthesizeStreamResponse(is_final=True)
-                logger.info("gRPC Stream finished successfully.", extra={**log_extra, 'event': 'GRPC_STREAM_COMPLETE'})
+                logger.info(
+                    "gRPC Stream finished successfully.",
+                    extra={**log_extra, "event": "GRPC_STREAM_COMPLETE"},
+                )
 
         except asyncio.CancelledError:
-            logger.warning("gRPC Stream cancelled by client context.", extra={**log_extra, 'event': 'GRPC_STREAM_CANCELLED'})
+            logger.warning(
+                "gRPC Stream cancelled by client context.",
+                extra={**log_extra, "event": "GRPC_STREAM_CANCELLED"},
+            )
             abort_event.set()
             raise
         except Exception as e:
             abort_event.set()
-            logger.error(f"gRPC Stream Error: {e}", exc_info=True, extra={**log_extra, 'event': 'GRPC_STREAM_ERROR'})
+            logger.error(
+                f"gRPC Stream Error: {e}",
+                exc_info=True,
+                extra={**log_extra, "event": "GRPC_STREAM_ERROR"},
+            )
             await context.abort(grpc.StatusCode.INTERNAL, str(e))
 
 
 def load_tls_credentials():
     try:
-        with open(settings.TTS_COQUI_SERVICE_KEY_PATH, 'rb') as f: private_key = f.read()
-        with open(settings.TTS_COQUI_SERVICE_CERT_PATH, 'rb') as f: certificate_chain = f.read()
-        with open(settings.GRPC_TLS_CA_PATH, 'rb') as f: root_ca = f.read()
-        server_credentials = grpc.ssl_server_credentials([(private_key, certificate_chain)], root_certificates=root_ca, require_client_auth=True)
+        with open(settings.TTS_COQUI_SERVICE_KEY_PATH, "rb") as f:
+            private_key = f.read()
+        with open(settings.TTS_COQUI_SERVICE_CERT_PATH, "rb") as f:
+            certificate_chain = f.read()
+        with open(settings.GRPC_TLS_CA_PATH, "rb") as f:
+            root_ca = f.read()
+        server_credentials = grpc.ssl_server_credentials(
+            [(private_key, certificate_chain)],
+            root_certificates=root_ca,
+            require_client_auth=True,
+        )
         return server_credentials
     except Exception as e:
-        logger.critical(f"Failed to load TLS certificates: {e}", extra={"event": "TLS_CERT_LOAD_ERROR"})
+        logger.critical(
+            f"Failed to load TLS certificates: {e}",
+            extra={"event": "TLS_CERT_LOAD_ERROR"},
+        )
         raise e
+
 
 async def serve_grpc():
     server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=4))
     coqui_pb2_grpc.add_TtsCoquiServiceServicer_to_server(TtsCoquiServicer(), server)
     listen_addr = f"[::]:{settings.GRPC_PORT}"
-    
-    use_tls = all(p and os.path.exists(p) for p in[
-        settings.TTS_COQUI_SERVICE_KEY_PATH, settings.TTS_COQUI_SERVICE_CERT_PATH, settings.GRPC_TLS_CA_PATH
-    ])
-    
+
+    use_tls = all(
+        p and os.path.exists(p)
+        for p in [
+            settings.TTS_COQUI_SERVICE_KEY_PATH,
+            settings.TTS_COQUI_SERVICE_CERT_PATH,
+            settings.GRPC_TLS_CA_PATH,
+        ]
+    )
+
     if not use_tls:
-        logger.critical("ARCHITECTURE VIOLATION: TLS certificates are missing or invalid paths provided.", extra={"event": "TLS_CONFIG_MISSING"})
+        logger.critical(
+            "ARCHITECTURE VIOLATION: TLS certificates are missing or invalid paths provided.",
+            extra={"event": "TLS_CONFIG_MISSING"},
+        )
         raise RuntimeError("gRPC Server cannot start without valid mTLS certificates.")
-        
+
     try:
         tls_creds = load_tls_credentials()
         server.add_secure_port(listen_addr, tls_creds)
-        logger.info(f"gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)", extra={"event": "GRPC_SERVER_READY"})
+        logger.info(
+            f"gRPC Server (Coqui) starting on {listen_addr} (mTLS Enabled)",
+            extra={"event": "GRPC_SERVER_READY"},
+        )
     except Exception as e:
-        logger.error(f"Failed to initialize secure port, shutting down: {e}", extra={"event": "GRPC_SERVER_INIT_FAIL"})
+        logger.error(
+            f"Failed to initialize secure port, shutting down: {e}",
+            extra={"event": "GRPC_SERVER_INIT_FAIL"},
+        )
         raise e
 
     await server.start()
