@@ -8,7 +8,7 @@ class Settings(BaseSettings):
     # --- APP INFO ---
     APP_NAME: str = "Sentiric XTTS Pro"
     # [ARCH-COMPLIANCE FIX]: Versiyon yükseltildi (Async gRPC Context.cancelled() düzeltmesi)
-    APP_VERSION: str = "1.2.8"
+    APP_VERSION: str = "1.2.9"
     ENV: str = os.getenv("ENV", "production")
 
     # --- NETWORK & SECURITY ---

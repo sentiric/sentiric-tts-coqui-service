@@ -352,7 +352,8 @@ async def generate_speech(request: TTSRequest, http_req: Request):
 
         cached_audio = RAM_CACHE.get(safe_hash)
         if cached_audio:
-            logger.info(f"RAM Cache Hit: {safe_hash}", extra={"event": "CACHE_HIT"})
+            # [ARCH-COMPLIANCE] INFO -> DEBUG (Teknik gürültü)
+            logger.debug(f"RAM Cache Hit: {safe_hash}", extra={"event": "CACHE_HIT"})
             return Response(
                 content=cached_audio, media_type=media_type, headers={"X-Cache": "HIT"}
             )
